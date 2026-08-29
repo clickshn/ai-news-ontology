@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-news-ontology"
+version = "0.1.0"
+description = "AI 뉴스/논문을 온톨로지 스키마로 구조화하고 LLM-judge eval 로 검증한 뒤 Obsidian Vault 에 적재하는 파이프라인"
+readme = "README.md"
+requires-python = ">=3.11"          # enum.StrEnum 사용
+license = "MIT"
+authors = [{ name = "clickshn" }]
+
+dependencies = [
+    "pydantic>=2.13,<3",            # 온톨로지 스키마 정의 + LLM 출력 검증
+    "anthropic>=1.2,<2",            # LLM 호출 (기본 프로바이더)
+    "feedparser>=6.0.14",           # RSS/Atom 수집
+    "pyyaml>=6.0.3",                # config.yaml 로딩
+    "python-dotenv>=1.2",           # .env 로딩
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "ruff>=0.14",
+]
+obs = [
+    "langfuse>=3.0",                # observability/ 를 실제로 켤 때만 설치
+]
+
+# CLI 진입점은 파이프라인 구현 후 활성화한다.
+# [project.scripts]
+# ai-news = "collectors.__main__:main"
+
+[tool.setuptools]
+packages = ["collectors", "extraction", "eval", "obsidian_writer", "observability"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
