@@ -143,17 +143,21 @@ class AnthropicClient:
         max_tokens: int = 8000,
         effort: str | None = "high",
         thinking: bool = True,
+        temperature: float | None = None,
         max_retries: int = 2,
         timeout: float = 120.0,
         client: anthropic.Anthropic | None = None,
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
-        # effort/thinking 은 모델마다 지원 범위가 다르다. 예를 들어 Haiku 4.5 는
-        # output_config.effort 를 거부한다(400). 지원하지 않는 모델에는 None /
-        # False 를 넘겨 파라미터 자체를 빼야 한다.
+        # effort/thinking/temperature 는 모델마다 지원 범위가 다르다. 지원하지 않는
+        # 모델에는 None / False 를 넘겨 파라미터 자체를 빼야 한다.
+        #   - Haiku 4.5: output_config.effort 거부(400). temperature 는 수용.
+        #   - Opus 5   : temperature 거부(400, "deprecated for this model").
+        # (결정 로그 D-032)
         self.effort = effort
         self.thinking = thinking
+        self.temperature = temperature
 
         if client is not None:
             # 테스트에서 목 클라이언트를 주입하는 경로.
@@ -208,6 +212,9 @@ class AnthropicClient:
             # effort 가 명시적으로 null 이면 파라미터를 보내지 않는다.
             "effort": section.get("effort", "high"),
             "thinking": section.get("thinking", "adaptive") != "disabled",
+            # temperature 는 기본이 None(= 보내지 않음)이다. 지원하는 모델에만
+            # 설정에서 명시적으로 켠다.
+            "temperature": section.get("temperature"),
         }
         kwargs.update(overrides)
         return cls(**kwargs)
@@ -223,6 +230,11 @@ class AnthropicClient:
         if self.thinking:
             # 통제어휘 선택과 영향도 판정은 판단이 섞이는 작업이라 기본으로 켠다.
             kwargs["thinking"] = {"type": "adaptive"}
+        if self.temperature is not None:
+            # SDK 1.x 의 messages.create/parse 에는 `temperature` 명명 인자가 없다.
+            # 최신 모델에서 제거된 파라미터라서인데, Haiku 4.5 같은 구세대 모델은
+            # 여전히 받는다. 그래서 extra_body 로 실어 보낸다. (D-032)
+            kwargs["extra_body"] = {"temperature": self.temperature}
         return kwargs
 
     def _usage(self, response: Any, latency_s: float | None = None) -> Usage:

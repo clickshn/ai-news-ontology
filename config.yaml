@@ -90,12 +90,18 @@ llm:
     # AnthropicClient 가 output_config 를 아예 보내지 않는다.
     effort: null
     thinking: "disabled"         # 이분 판정이라 사고 확장이 필요 없다
+    # 게이트는 재현 가능해야 한다. 미설정 시 API 기본값(1.0)이 적용돼 같은 기사가
+    # 실행마다 다르게 판정된다(#33001: 5회 중 4통과/1스킵). (결정 로그 D-032)
+    temperature: 0
 
   extraction:
     model: "claude-opus-5"
     max_tokens: 8000
     thinking: "adaptive"         # 구조화 추출은 판단이 섞이므로 기본 on
     effort: "high"
+    # [주의] Opus 5 는 temperature 를 거부한다(400 "deprecated for this model").
+    # 값을 넣지 말 것. 출력 다양성은 effort 로 조절한다.
+    temperature: null
 
 # --- 3. 온톨로지 통제어휘 (schema.py Enum 의 미러) -----------------------------
 ontology:

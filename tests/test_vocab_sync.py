@@ -74,6 +74,40 @@ def test_no_duplicate_vocabulary_values():
         assert len(values) == len(set(values)), f"{enum_cls.__name__} 에 중복 값이 있습니다"
 
 
+def test_relevance_gate_temperature_is_zero():
+    """게이트는 재현 가능해야 한다 (D-032).
+
+    temperature 를 비워 두면 API 기본값(1.0)이 적용돼 같은 기사가 실행마다 다르게
+    판정된다. 실제로 #33001 이 5회 중 4통과/1스킵으로 갈렸다.
+    """
+    config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    gate = (config.get("llm") or {}).get("relevance_gate") or {}
+    assert "temperature" in gate, "relevance_gate 에 temperature 항목이 없습니다"
+    assert gate["temperature"] == 0
+
+
+def test_extraction_temperature_is_not_set():
+    """Opus 5 는 temperature 를 거부한다(400 'deprecated for this model').
+
+    값이 들어가면 추출 단계가 통째로 실패한다. null 로 남아 있어야 한다.
+    """
+    config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    extraction = (config.get("llm") or {}).get("extraction") or {}
+    assert extraction.get("temperature") is None
+
+
+def test_temperature_is_only_sent_when_configured():
+    """None 이면 요청에 temperature 자체가 실리지 않아야 한다."""
+    from extraction.llm import AnthropicClient
+
+    gate = AnthropicClient(model="claude-haiku-4-5-20251001", effort=None, thinking=False,
+                           temperature=0, client=object())
+    assert gate._request_kwargs()["extra_body"] == {"temperature": 0}
+
+    extract = AnthropicClient(model="claude-opus-5", temperature=None, client=object())
+    assert "extra_body" not in extract._request_kwargs()
+
+
 def test_impact_scale_matches_schema(ontology_config):
     """영향도 척도(1~5)와 근거 필수 여부가 config 미러와 일치해야 한다."""
     from extraction.schema import Impact
