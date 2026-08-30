@@ -18,6 +18,7 @@ import json
 import pytest
 
 from eval.runner import (
+    JUDGE_PROMPT_DIR,
     EvalError,
     build_judge_variables,
     compare_ontology,
@@ -34,6 +35,11 @@ from eval.runner import (
 from eval.schema import GoldenItem, HumanSummaryScores, ItemScore, SummaryJudgement
 from extraction.llm import LLMClient, StructuredResult, Usage
 from extraction.schema import NewsOntology
+
+GOLDEN_SET_README = (
+    __import__("pathlib").Path(__file__).resolve().parent.parent
+    / "eval" / "golden_set" / "README.md"
+)
 
 # ---------------------------------------------------------------------------
 # 픽스처
@@ -323,7 +329,7 @@ def test_judge_result_is_parsed(golden, ontology):
     assert score.judgement.mean_score == pytest.approx(14 / 3, abs=1e-3)
     assert judge.calls[0]["output_model"] is SummaryJudgement
     assert score.metadata.judge_model == "fake-judge"
-    assert score.metadata.judge_prompt == "summary_quality.v2.md"
+    assert score.metadata.judge_prompt == "summary_quality.v3.md"
     assert score.metadata.judge_prompt_sha256
 
 
@@ -370,6 +376,119 @@ def test_judge_human_gap_is_computed_when_available(golden, ontology):
     )
     score = evaluate_item(labeled, ontology, judge_client=FakeJudge())
     assert score.judge_human_gap == pytest.approx(14 / 3 - 4, abs=1e-3)
+
+
+def test_active_judge_prompt_is_v3():
+    from eval.runner import DEFAULT_JUDGE_PROMPT
+
+    assert DEFAULT_JUDGE_PROMPT == "summary_quality.v3.md"
+
+
+@pytest.mark.parametrize(
+    ("filename", "must_contain"),
+    [
+        ("summary_quality.v1.md", "아래 JSON 만 출력한다"),   # v1 고유
+        ("summary_quality.v2.md", "2~3문장"),                # v2 가 고친 규칙
+        ("summary_quality.v3.md", "슬롯"),                   # v3 가 넣은 규칙
+    ],
+)
+def test_every_judge_prompt_version_is_preserved(filename, must_contain):
+    """실행에 쓰인 버전은 지우지도 고치지도 않는다 (D-010 / D-023 / D-041 / D-045).
+
+    v2 는 2026-08-30 첫 실행에 실제로 쓰였으므로, 그 점수가 어떤 지시에서 나왔는지
+    추적 가능해야 한다.
+    """
+    prompt = load_judge_prompt(filename)
+    assert prompt.system and prompt.user
+    assert must_contain in prompt.system + prompt.user
+
+
+def test_later_rules_did_not_leak_into_earlier_versions():
+    """새 버전의 규칙이 옛 버전에 새어들면 '보존'이 아니다."""
+    v1 = load_judge_prompt("summary_quality.v1.md")
+    v2 = load_judge_prompt("summary_quality.v2.md")
+    v1_text = v1.system + v1.user
+    v2_text = v2.system + v2.user
+
+    assert "2~3문장" not in v1_text, "v2 의 규칙이 v1 에 들어갔다"
+    assert "슬롯" not in v1_text and "슬롯" not in v2_text, "v3 의 규칙이 옛 버전에 들어갔다"
+
+
+# ---------------------------------------------------------------------------
+# v3 완결성 세분화 (D-045)
+# ---------------------------------------------------------------------------
+def test_v3_defines_what_counts_as_core():
+    """구간만 나누고 '핵심'을 정의하지 않으면 채점자마다 다른 것을 센다.
+
+    첫 실행에서 judge 와 사람의 누락 목록은 합집합 6개 중 1개만 겹쳤다 —
+    점수 차이의 원인이 관대함이 아니라 채점 대상 불일치였다.
+    """
+    system = load_judge_prompt().system
+    for slot in ["① 사건", "② 범위", "③ 정도", "④ 경위"]:
+        assert slot in system, f"슬롯 정의에 {slot} 가 없다"
+
+
+def test_v3_completeness_bands_are_granular():
+    """v2 는 '하나가 빠졌다=3'이 사실상 하한이라 2개든 5개든 3점으로 수렴했다."""
+    system = load_judge_prompt().system
+    for band in ["4슬롯 모두", "3슬롯을 채웠다", "2슬롯을 채웠다", "1슬롯만 채웠다"]:
+        assert band in system, f"구간 '{band}' 가 없다"
+
+
+def test_v3_rejects_bare_mention_as_slot_fill():
+    """슬롯을 절반만 채운 것을 충족으로 세면 구간을 나눈 의미가 없다."""
+    system = load_judge_prompt().system
+    assert "이름만 언급하고 구체가 없으면 미충족" in system
+
+
+def test_v3_discounts_slots_the_source_never_provided():
+    """원문이 잘려서 없는 정보를 요약 탓으로 돌리면 안 된다 (D-013)."""
+    assert "분모에서 뺀다" in load_judge_prompt().system
+
+
+def test_v3_carries_the_boundary_case():
+    """왜 이렇게 나눴는지를 다음 검토자가 바로 알 수 있어야 한다."""
+    system = load_judge_prompt().system
+    assert "경계 사례" in system
+    assert "495,211회" in system, "실제 사례의 구체 수치가 있어야 한다"
+    assert "1개만 겹쳤다" in system, "판단 근거가 된 관측이 있어야 한다"
+
+
+def test_v3_keeps_faithfulness_and_concision_unchanged():
+    """완결성만 고쳤다 — 나머지 축을 조용히 바꾸면 점수 추이를 못 읽는다."""
+    v2, v3 = load_judge_prompt("summary_quality.v2.md"), load_judge_prompt()
+    for rule in [
+        "5: 모든 문장이 원문으로 검증된다.",
+        "5: 2~3문장, 모든 문장이 정보를 더한다.",
+    ]:
+        assert rule in v2.system and rule in v3.system
+
+
+def test_v3_marks_itself_unverified():
+    """루브릭 변경은 가설이다. 재실행 전까지 효과를 단정하지 않는다 (D-042)."""
+    raw = (JUDGE_PROMPT_DIR / "summary_quality.v3.md").read_text(encoding="utf-8")
+    assert "아직 검증되지 않았다" in raw
+
+
+# ---------------------------------------------------------------------------
+# 라벨링 가이드 (D-046)
+# ---------------------------------------------------------------------------
+def test_labeling_guide_forbids_out_of_rubric_criteria():
+    """규칙이 문서에 실제로 적혀 있는지. 합의만 하고 안 적으면 다음에 또 섞인다."""
+    text = (GOLDEN_SET_README).read_text(encoding="utf-8")
+    assert "루브릭 밖 기준을 섞지 않는다" in text
+    for banned in ["직무 관련성", "개인적 관심사", "포트폴리오"]:
+        assert banned in text, f"금지 기준 '{banned}' 가 명시되지 않았다"
+
+
+def test_pre_guideline_item_is_marked_not_edited():
+    """규칙 이전 라벨은 표시만 하고 점수·근거를 고치지 않는다 (D-046)."""
+    item = load_golden_set()[0]
+    assert item.labeling_guideline == "pre-2026-08-30"
+    # 사람이 매긴 값이 사후 수정되지 않았는지
+    assert item.expected.impact.score == 1
+    assert "AI 엔지니어링 직무 관련성" in item.expected.impact.rationale
+    assert "사후 수정하지 않는다" in item.notes
 
 
 def test_judge_prompt_v1_is_preserved():
@@ -472,7 +591,7 @@ def test_scores_record_reproduction_metadata(tmp_path, golden, ontology):
     meta = score.metadata
     assert meta.extraction_prompt == "extract_ontology.v3.md"
     assert meta.extraction_prompt_sha256
-    assert meta.judge_prompt_sha256 == prompt_sha256("summary_quality.v2.md")
+    assert meta.judge_prompt_sha256 == prompt_sha256("summary_quality.v3.md")
     assert meta.evaluated_at.tzinfo is not None
 
 

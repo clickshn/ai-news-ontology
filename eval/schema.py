@@ -115,6 +115,10 @@ class GoldenItem(BaseModel):
     notes: str = ""
     # 초안이 어디서 왔는지. 확정 시 "무엇을 사람이 바꿨는지" 대조에 쓴다.
     draft_source: str | None = None
+    # 어떤 라벨링 규칙 아래에서 매긴 라벨인지. 프롬프트 버전을 기록하는 것과
+    # 같은 이유다(D-010) — 규칙이 바뀌면 라벨의 의미도 바뀌는데, 어느 규칙에서
+    # 나온 라벨인지 모르면 나중에 재라벨링 대상을 고를 수 없다. (D-046)
+    labeling_guideline: str | None = None
 
     @model_validator(mode="after")
     def _confirmed_items_must_be_complete(self) -> "GoldenItem":
