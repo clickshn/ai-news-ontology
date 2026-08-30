@@ -24,6 +24,7 @@ from obsidian_writer.mapper import (
     render_note,
 )
 from obsidian_writer.writer import (
+    SLUG_MAX_CHARS,
     WriteError,
     atomic_write,
     build_filename,
@@ -229,6 +230,101 @@ def test_slug_truncates_at_hyphen_boundary():
     assert not slug.endswith("-")
     # 단어가 반토막 나지 않았는지
     assert all(part in "alpha beta gamma delta epsilon zeta".split() for part in slug.split("-"))
+
+
+# ---------------------------------------------------------------------------
+# writer — 슬러그 자르기 (D-037)
+#
+# 24자였을 때 실제로 나온 파일명이 `...-퍼저가-ffmpeg의.md` 였다. 조사에서 끊겨
+# 무슨 기사인지 읽히지 않는다. 아래는 길이 기준(40)과 경계 규칙을 함께 고정한다.
+# ---------------------------------------------------------------------------
+REGRESSION_TITLE = "바이브코딩으로 만든 퍼저가 FFmpeg의 0 나누기 버그를 발견"
+
+
+def test_default_slug_length_is_forty():
+    """숫자를 바꾸려면 근거가 바뀌어야 한다 — D-037 을 함께 고쳐라."""
+    assert SLUG_MAX_CHARS == 40
+
+
+def test_regression_title_is_no_longer_cut_mid_thought():
+    """이 버그의 원본 사례. 이제 제목이 통째로 들어간다."""
+    slug = slugify(REGRESSION_TITLE, max_chars=SLUG_MAX_CHARS)
+    assert slug == "바이브코딩으로-만든-퍼저가-ffmpeg의-0-나누기-버그를-발견"
+    assert not slug.endswith("의"), "조사에서 끊겼다 — 24자 시절의 증상이다"
+
+
+def test_regression_filename_stays_short_enough():
+    """Windows 경로 예산과 Obsidian 파일 목록 가독성을 위해 60자 안쪽."""
+    name = build_filename(
+        title=REGRESSION_TITLE, source_name="GeekNews", processed_at=PROCESSED_AT
+    )
+    assert name == "2026-08-29-geeknews-바이브코딩으로-만든-퍼저가-ffmpeg의-0-나누기-버그를-발견.md"
+    assert len(name) < 64
+
+
+@pytest.mark.parametrize(
+    ("label", "title"),
+    [
+        ("짧은 한글", "Anthropic, Claude Opus 5 출시"),
+        ("보통 한글", "SpaceX의 Cursor 인수 이후 OpenAI가 내린 결정"),
+        ("긴 한글", "EasyEffects를 모든 Linux 배포판에 포함해 노트북 스피커 음질을 개선해야 함"),
+        ("영문", "Test-Time Scaling without Repeated Sampling for Efficient Reasoning"),
+        ("혼합", "Anthropic이 공개한 Claude Agent SDK로 사내 워크플로 자동화하기"),
+    ],
+)
+def test_slug_never_ends_mid_word(label, title):
+    """어떤 제목이든 (a) 길이를 지키고 (b) 하이픈으로 끝나지 않는다."""
+    slug = slugify(title, max_chars=SLUG_MAX_CHARS)
+    assert 0 < len(slug) <= SLUG_MAX_CHARS, label
+    assert not slug.startswith("-") and not slug.endswith("-"), label
+
+
+@pytest.mark.parametrize(
+    ("label", "title"),
+    [
+        ("짧은 한글", "Anthropic, Claude Opus 5 출시"),
+        ("보통 한글", "SpaceX의 Cursor 인수 이후 OpenAI가 내린 결정"),
+        ("혼합", "Anthropic이 공개한 Claude Agent SDK"),
+    ],
+)
+def test_short_titles_survive_intact(label, title):
+    """40자 안에 드는 제목은 한 글자도 잃지 않는다."""
+    full = slugify(title)
+    assert slugify(title, max_chars=SLUG_MAX_CHARS) == full, label
+
+
+def test_long_title_keeps_whole_words_only():
+    """잘린 뒤에도 남은 조각은 전부 원래 단어여야 한다."""
+    title = "EasyEffects를 모든 Linux 배포판에 포함해 노트북 스피커 음질을 개선해야 함"
+    words = set(slugify(title).split("-"))
+    assert set(slugify(title, max_chars=SLUG_MAX_CHARS).split("-")) <= words
+
+
+def test_boundary_exactly_at_limit_keeps_the_whole_word():
+    """경계가 딱 `max_chars` 위치면 그 앞 단어는 온전히 들어간다.
+
+    `slug[:max_chars]` 만 보던 옛 코드는 이 하이픈이 시야 밖이라 멀쩡한 단어를
+    하나 더 버렸다. 그래서 `max_chars + 1` 까지 들여다본다.
+    """
+    slug = slugify("alpha beta gamma delta epsilon zeta eta theta", max_chars=39)
+    assert slug == "alpha-beta-gamma-delta-epsilon-zeta-eta"
+
+
+def test_title_without_spaces_is_cut_by_length():
+    """하이픈이 없으면 자를 자리가 없다. 길이로 자르되 제한은 지킨다."""
+    slug = slugify("코드리뷰자동화도구를" * 6, max_chars=SLUG_MAX_CHARS)
+    assert len(slug) == SLUG_MAX_CHARS
+    assert "-" not in slug
+
+
+def test_long_leading_word_is_not_reduced_to_a_stub():
+    """첫 단어가 짧아 경계가 맨 앞에 있으면, 경계를 포기하고 길이로 자른다.
+
+    `ai` 만 남기면 파일명이 서로를 구분하지 못한다 — 구분자 역할조차 못 한다.
+    """
+    slug = slugify("ai " + "가나다라마바사" * 8, max_chars=SLUG_MAX_CHARS)
+    assert len(slug) == SLUG_MAX_CHARS
+    assert slug.startswith("ai-")
 
 
 def test_empty_title_falls_back():

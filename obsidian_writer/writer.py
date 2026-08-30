@@ -25,9 +25,18 @@ from typing import Any, Literal
 from extraction.schema import NewsOntology
 from obsidian_writer.mapper import NoteContext, render_note
 
-# 제목 슬러그 최대 길이. 영문 기준 20자 내외를 목표로 하되, 한국어는 같은 글자
-# 수에 담기는 정보가 많아 조금 여유를 둔다. 하이픈 경계에서 자른다.
-SLUG_MAX_CHARS = 24
+# 제목 슬러그 최대 길이(하이픈 포함). 하이픈 경계에서 자른다.
+#
+# 24자였을 때 한국어 제목이 뜻이 끝나기 전에 잘렸다 — 실제로 만들어진 파일명이
+# `...-퍼저가-ffmpeg의.md` 로, 조사에서 끊겨 무슨 기사인지 읽히지 않았다.
+# 원인은 자르는 로직이 아니라 **길이 기준**이다. "영문 20자 내외"로 잡은 값인데,
+# 한국어는 한 글자가 한 음절이라 같은 글자 수에 단어가 훨씬 적게 들어간다.
+#
+# 실측: 수집 중인 한국어 헤드라인은 슬러그로 바꾸면 34~35자에 몰려 있다.
+# 40 이면 그 대역이 통째로 들어가면서 파일명 전체(`날짜-소스-슬러그.md`)도
+# 60자 안쪽에 머문다. 더 늘려도 얻는 건 영문 논문 제목뿐인데, 그건 애초에
+# 40~50자로 끝나지 않아서 어차피 잘린다. (D-037)
+SLUG_MAX_CHARS = 40
 
 # Windows 파일명 금지 문자 + 제어문자.
 _FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -74,14 +83,32 @@ def slugify(text: str, *, max_chars: int | None = None) -> str:
     slug = _NON_SLUG_RE.sub("-", normalized)
     slug = _DASH_RUN_RE.sub("-", slug).strip("-")
 
-    if max_chars is not None and len(slug) > max_chars:
-        cut = slug[:max_chars]
-        boundary = cut.rfind("-")
-        # 하이픈이 너무 앞에 있으면(=첫 단어가 길면) 그냥 자른다.
-        slug = cut[:boundary] if boundary > max_chars // 2 else cut
-        slug = slug.strip("-")
+    if max_chars is not None:
+        slug = _truncate_at_word_boundary(slug, max_chars)
 
     return slug
+
+
+def _truncate_at_word_boundary(slug: str, max_chars: int) -> str:
+    """하이픈(=원래 공백) 경계에서 자른다.
+
+    `max_chars + 1` 까지 들여다보는 이유: 경계가 정확히 `max_chars` 위치에 있으면
+    그 앞 단어는 길이 제한 안에 **온전히** 들어간다. `slug[:max_chars]` 만 보면
+    그 하이픈이 시야 밖이라 멀쩡한 단어를 하나 더 버리게 된다.
+
+    경계가 너무 앞에 있으면(첫 단어가 길어서 남는 게 토막뿐이면) 경계를 포기하고
+    글자 수로 자른다. 하이픈이 아예 없는 통짜 제목도 같은 길로 간다 — 자를 자리가
+    없으니 달리 방법이 없다. 한글은 음절 단위라 중간에서 잘려도 글자가 깨지지는
+    않는다.
+    """
+    if len(slug) <= max_chars:
+        return slug
+
+    window = slug[: max_chars + 1]
+    boundary = window.rfind("-")
+    if boundary >= max_chars // 2:
+        return window[:boundary].strip("-")
+    return slug[:max_chars].strip("-")
 
 
 def sanitize_filename(name: str) -> str:
