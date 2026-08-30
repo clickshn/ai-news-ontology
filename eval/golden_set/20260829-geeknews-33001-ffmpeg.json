@@ -1,0 +1,35 @@
+{
+  "_읽어주세요": [
+    "status 가 'draft' 인 동안에는 채점에 들어가지 않는다. 아래 <<채워주세요>> 를",
+    "모두 채우고 status 를 'confirmed' 로 바꾸면 그때부터 정답으로 쓰인다.",
+    "expected 의 나머지 값은 v3 추출 결과를 옮겨 적은 **초안**이다. 정답이 아니므로",
+    "그대로 두기 전에 한 번씩 읽고, 바꾼 것이 있으면 notes 에 이유를 남긴다."
+  ],
+  "id": "20260829-geeknews-33001-ffmpeg",
+  "source_url": "https://news.hada.io/topic?id=33001",
+  "status": "draft",
+  "input": {
+    "제목": "바이브코딩으로 만든 퍼저가 FFmpeg의 0 나누기 버그를 발견",
+    "본문": "<<채워주세요>>"
+  },
+  "expected": {
+    "기술영역": [
+      "Application/Product"
+    ],
+    "발표유형": "Community/Discussion",
+    "관련기업": [
+      "FFmpeg"
+    ],
+    "관련기존기술": [
+      "Fuzzing",
+      "Vibe Coding"
+    ],
+    "영향도": null
+  },
+  "reference_summary": null,
+  "human_summary_scores": null,
+  "labeled_by": "<<채워주세요>>",
+  "labeled_at": null,
+  "notes": "확정 전에 확인할 것 — (1) 영향도: v1/v2/v3 가 모두 2를 냈지만 셋 다 같은 모델이라 일치가 근거가 되지 못한다. 사람이 독립적으로 점수를 매길 것. (2) 관련기업의 FFmpeg 은 기업이 아니라 오픈소스 프로젝트다. 남길지 뺄지가 CompanyRef 엔티티 경계 관찰 항목과 연결된다. (3) 기술영역에서 Agent 가 빠진 것은 D-022 의 의도된 결과다 — LLM 이 퍼저를 '작성하는 데' 쓰였을 뿐 자율 실행 주체가 아니다.",
+  "draft_source": "extract_ontology.v3.md / claude-opus-5 / 2026-08-29 실행. v1->v2 에서 세 필드가 바뀌었다(D-024): 기술영역 Agent 제거, 발표유형 Benchmark/Report -> Community/Discussion, 관련기존기술 한글 병기 -> 영어 표준형."
+}
