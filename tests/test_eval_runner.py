@@ -146,10 +146,30 @@ def test_broken_file_stops_the_run(tmp_path):
 
 
 def test_repo_golden_set_loads():
-    """실제 eval/golden_set/ 이 스키마에 맞는지 (초안 포함)."""
-    items = load_golden_set(include_drafts=True)
-    assert any(i.id == "20260829-geeknews-33001-ffmpeg" for i in items)
-    assert load_golden_set() == [], "아직 confirmed 항목은 없어야 한다"
+    """실제 eval/golden_set/ 이 스키마에 맞고 confirmed 로 로드되는지.
+
+    #33001 은 2026-08-30 에 사람이 확정했다. `confirmed` 승격 조건(영향도·본문·
+    labeler·플레이스홀더 없음)을 실제 파일로도 고정해 둔다.
+    """
+    items = load_golden_set()
+    assert [i.id for i in items] == ["20260829-geeknews-33001-ffmpeg"]
+
+    item = items[0]
+    assert item.expected.impact is not None
+    assert item.input.body, "본문이 비면 재추출·judge 채점을 재현할 수 없다"
+    assert item.labeled_by and item.labeled_at
+    assert item.human_summary_scores is not None, "사람 점수가 있어야 judge 편향을 잰다"
+
+
+def test_repo_golden_set_human_score_differs_from_model():
+    """사람이 모델과 다르게 라벨한 것이 실제로 남아 있는지.
+
+    영향도를 모델은 2, 사람은 1로 봤다. 이 불일치가 채점기에 잡히는 것이
+    골든셋을 두는 이유이므로, 값이 조용히 같아지면 알아채야 한다.
+    """
+    item = load_golden_set()[0]
+    assert item.expected.impact.score == 1
+    assert item.human_summary_scores.completeness == 1
 
 
 # ---------------------------------------------------------------------------

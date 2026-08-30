@@ -1,16 +1,15 @@
 {
   "_읽어주세요": [
-    "status 가 'draft' 인 동안에는 채점에 들어가지 않는다. 아래 <<채워주세요>> 를",
-    "모두 채우고 status 를 'confirmed' 로 바꾸면 그때부터 정답으로 쓰인다.",
-    "expected 의 나머지 값은 v3 추출 결과를 옮겨 적은 **초안**이다. 정답이 아니므로",
-    "그대로 두기 전에 한 번씩 읽고, 바꾼 것이 있으면 notes 에 이유를 남긴다."
+    "사람이 확정한 정답이다(status: confirmed). 채점기가 이 파일을 정답으로 쓴다.",
+    "expected 의 기술영역/발표유형/관련기업/관련기존기술은 v3 초안을 검토 후 그대로 유지했고,",
+    "영향도는 사람이 독립적으로 매겼다 — 모델(2)과 다르다. notes 에 사유가 있다."
   ],
   "id": "20260829-geeknews-33001-ffmpeg",
   "source_url": "https://news.hada.io/topic?id=33001",
-  "status": "draft",
+  "status": "confirmed",
   "input": {
     "제목": "바이브코딩으로 만든 퍼저가 FFmpeg의 0 나누기 버그를 발견",
-    "본문": "<<채워주세요>>"
+    "본문": "FFmpeg의 Sony PS2 VPK 디먹서에서 21바이트 입력으로 재현되는 0 나누기 버그가 발견돼, 악성 .vpk 파일이나 스트림을 여는 애플리케이션이 충돌할 수 있음\nvpk_read_packet이 마지막 오디오 블록의 size와 skip을 계산할 때 채널 수가 0인지 검사하지 않아 SIGFPE가 발생함\nvpk_read_header에 채널 수 검증이 있지만, 퍼저의 사용자 정의 AVIO 경로에서는 프로브·헤더 데이터와 패킷 데이터가 달라 검사를 통과한 뒤 채널 수가 다시 0이 될 수 있음\n퍼저는 495,211회 실행, 10시간 43분 만에 결함을 찾았으며 충돌은 결정론적이지만 메모리 손상이나 임의 읽기·쓰기는 없어 Medium 등급의 서비스 거부(DoS) 문제로 평가됨\nvpk_read_packet 진입 시 채널 수를 다시 검사해 AVERROR_INVALIDDATA를 반환하고, 회귀 테스트에서 av_read_frame의 반환값이 -22인지 확인할 수 있음\n0 나누기가 발생하는 코드\n결함은 Sony PS2 VPK 컨테이너의 오디오 블록을 처리하는 libavformat/vpk.c:89에 있음\nvpk_read_packet은 스트림의 마지막 블록에서 다음 두 값을 채널 수로 나눔\nsize: vpk->last_block_size / par->ch_layout.nb_channels\nskip: (par->block_align - vpk->last_block_size) / par->ch_layout.nb_channels\npar->ch_layout.nb_channels가 0이면 CPU에서 정수 0 나누기 예외인 SIGFPE가 발생함\n검사를 우회해 충돌에 도달하는 과정\nvpk_probe가 빅엔디언 VPK 매직을 인식해 입력을 VPK 디먹서에 할당함\nvpk_read_header는 24바이트 헤더를 파싱하며, 퍼징 입력은 0x0e–0x11 바이트의 nb_channels를 0으로 설정함\n헤더 처리에는 nb_channels > 0 검증이 이미 있지만, 사용자 정의 AVIO 경로에서는 프로브·헤더 데이터와 이후 패킷 데이터가 달라질 수 있음\nvpk->last_block_size와 vpk->block_count는 유효한 채널 수가 있는 프로브 데이터로 계산됨\nvpk_read_packet 실행 시 원래 퍼징 스트림에서 가져온 par->ch_layout.nb_channels가 다시 0이 됨\n마지막 블록 분기에 들어가면 size 계산에서 먼저 0 나누기가 발생하며, skip 계산도 같은 0 제수를 사용함\n21바이트 재현 입력\n충돌 파일 crash_1787378545_34bc062c_sig_signal8.bin의 전체 크기는 21바이트임\n처음 4바이트 20 4b 50 56은 ASCII \" KPV\"로, 워드 경계에서 바이트 순서가 뒤집힌 VPK 빅엔디언 매직에 해당함\n0x0e–0x11의 00 00 00 00이 nb_channels = 0을 만들어 충돌을 유발함\nGDB 역추적에서는 vpk_read_packet의 unsigned size = ... / par->ch_layout.nb_channels에서 SIGFPE가 발생하며, 호출 경로는 다음과 같음\nff_read_packet\nread_frame_internal\nav_read_frame\nfuzz_ffmpeg\nmain\n발견 과정과 충돌 메타데이터\n퍼저는 495,211회 실행, 코퍼스 13,188개 상태에서 10시간 43분 만에 해당 입력을 발견함\n신호는 SIGFPE, 반환 코드는 -8임\n오류 주소/RIP는 0x7ffff48a66d7, RSP는 0x7fffffffcce0임\n부모 시드는 36e65f4009ba0cab, 대상 SHA256은 d704c2a52b21bd33임\n영향과 악용 가능성\n21바이트 입력과 단일 디먹서 경로만으로 결정론적 충돌을 재현할 수 있음\navformat_open_input이 매직으로 형식을 자동 감지하므로 트리거 경로가 얕으며, 입력 자체만으로 동작해 네트워크나 별도의 힙 설정이 필요하지 않음\n신뢰할 수 없는 데이터에 avformat_open_input과 av_read_frame을 호출하는 모든 FFmpeg 연동 애플리케이션이 영향을 받을 수 있음\n입력은 .vpk 파일이나 자신을 VPK로 식별하는 컨테이너에 포함될 수 있음\n메모리 손상은 없음\n범위 밖 읽기·쓰기 없음\n해제 후 사용 없음\nNULL 역참조 없음\n오류 지점 주변에 제어 가능한 쓰기나 임의 읽기 없음\n즉각적인 코드 실행 수단이 아니라 안정적인 서비스 거부(DoS) 수단이며 심각도는 Medium임\n수정안과 회귀 테스트\nvpk_read_packet 시작 부분에서 par->ch_layout.nb_channels == 0이면 AVERROR_INVALIDDATA를 반환하도록 방어할 수 있음\n이는 vpk_read_header에 이미 있는 nb_channels <= 0 검증과 일관되며, SIGFPE 대신 정상적인 오류를 반환함\n회귀 테스트에서는 같은 21바이트 VPK 스트림을 입력한 뒤 av_read_frame이 충돌하지 않고 -22 (AVERROR_INVALIDDATA) 를 반환하는지 확인함"
   },
   "expected": {
     "기술영역": [
@@ -24,12 +23,19 @@
       "Fuzzing",
       "Vibe Coding"
     ],
-    "영향도": null
+    "영향도": {
+      "점수": 1,
+      "근거": "메모리 손상이나 임의 읽기·쓰기가 없는 단일 디먹서(Sony PS2 VPK)의 국소적 DoS 결함으로, 원문 자체가 Medium 등급으로 평가하고 있어 실무 파급력이 낮다. AI 퍼저의 활용 사례라는 점은 흥미롭지만 AI 엔지니어링 직무 관련성이 낮다고 판단해 영향도를 낮게 준다."
+    }
   },
   "reference_summary": null,
-  "human_summary_scores": null,
-  "labeled_by": "<<채워주세요>>",
-  "labeled_at": null,
-  "notes": "확정 전에 확인할 것 — (1) 영향도: v1/v2/v3 가 모두 2를 냈지만 셋 다 같은 모델이라 일치가 근거가 되지 못한다. 사람이 독립적으로 점수를 매길 것. (2) 관련기업의 FFmpeg 은 기업이 아니라 오픈소스 프로젝트다. 남길지 뺄지가 CompanyRef 엔티티 경계 관찰 항목과 연결된다. (3) 기술영역에서 Agent 가 빠진 것은 D-022 의 의도된 결과다 — LLM 이 퍼저를 '작성하는 데' 쓰였을 뿐 자율 실행 주체가 아니다.",
+  "human_summary_scores": {
+    "충실성": 5,
+    "완결성": 1,
+    "간결성": 5
+  },
+  "labeled_by": "netisa",
+  "labeled_at": "2026-08-30",
+  "notes": "완결성 1점 — 원문의 실행 횟수(495,211회)/소요시간(10시간 43분), SIGFPE, Medium 등급, 수정안 등 핵심 정보 대부분이 요약에서 생략됨. 영향도 1점 — DoS 파급력이 낮고 AI 엔지니어링 직무 관련성도 낮다고 판단.",
   "draft_source": "extract_ontology.v3.md / claude-opus-5 / 2026-08-29 실행. v1->v2 에서 세 필드가 바뀌었다(D-024): 기술영역 Agent 제거, 발표유형 Benchmark/Report -> Community/Discussion, 관련기존기술 한글 병기 -> 영어 표준형."
 }
