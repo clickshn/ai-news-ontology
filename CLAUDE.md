@@ -55,8 +55,10 @@ AI 뉴스/논문을 온톨로지 스키마로 구조화하고, LLM-judge 기반 
 ### 커밋 전 확인
 매 커밋 직전에 staged 내용을 검사한다.
 - `git status`에 `.env`가 없는지
-- staged diff에 API 키 패턴(`sk-ant-`), 개인 로컬 경로(`C:\`, `MyVault`, 사용자명)가
-  하드코딩돼 있지 않은지 grep으로 재확인
+- staged diff에 API 키 패턴(`sk-ant-`), 개인 로컬 경로(`C:\`, Vault 디렉터리 이름,
+  OS 사용자명)가 하드코딩돼 있지 않은지 grep으로 재확인
+- 커밋 author 이메일이 GitHub noreply 주소인지 (`git config user.email`). 공개
+  레포의 커밋 메타데이터는 누구나 조회할 수 있고, 지우려면 히스토리 재작성이 필요하다
 - 실행 산출물(`observability/logs/*.jsonl`, `eval/scores/*`)이 잡히지 않았는지
 
 ### 테스트
