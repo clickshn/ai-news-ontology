@@ -41,6 +41,7 @@ from eval.schema import (
     FieldScore,
     GoldenItem,
     ItemScore,
+    JudgeUsage,
     RunMetadata,
     RunSummary,
     SummaryJudgement,
@@ -240,11 +241,15 @@ def judge_summary(
     client: LLMClient,
     *,
     prompt: Prompt | None = None,
-) -> tuple[SummaryJudgement, str]:
+) -> tuple[SummaryJudgement, str, JudgeUsage]:
     """요약 1건을 루브릭으로 채점한다. **실제 API 호출이 일어난다.**
 
+    사용량을 함께 돌려주는 이유는 비용이 이 프로젝트의 실질적인 제약이기
+    때문이다(D-019). 채점 1회가 얼마였는지 결과에 남지 않으면, eval 을 매
+    실행마다 돌릴지 프롬프트 변경 시에만 돌릴지 판단할 근거가 없다.
+
     Returns:
-        `(채점 결과, 사용한 프롬프트 파일명)`
+        `(채점 결과, 사용한 프롬프트 파일명, 사용량)`
     """
     prompt = prompt or load_judge_prompt()
     system, user = prompt.render(**build_judge_variables(golden, summary))
@@ -252,7 +257,18 @@ def judge_summary(
     result: StructuredResult[SummaryJudgement] = client.parse_into(
         system=system, user=user, output_model=SummaryJudgement
     )
-    return result.value, prompt.name
+    usage = result.usage
+    return (
+        result.value,
+        prompt.name,
+        JudgeUsage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            thinking_tokens=usage.thinking_tokens,
+            cache_read_input_tokens=usage.cache_read_input_tokens,
+            latency_s=usage.latency_s,
+        ),
+    )
 
 
 def load_judge_prompt(filename: str = DEFAULT_JUDGE_PROMPT) -> Prompt:
@@ -313,11 +329,12 @@ def evaluate_item(
 
     judgement: SummaryJudgement | None = None
     judge_prompt_name: str | None = None
+    judge_usage: JudgeUsage | None = None
     errors: list[str] = []
 
     if judge_client is not None:
         try:
-            judgement, judge_prompt_name = judge_summary(
+            judgement, judge_prompt_name, judge_usage = judge_summary(
                 golden, actual.summary, judge_client, prompt=judge_prompt
             )
         except Exception as exc:
@@ -331,6 +348,7 @@ def evaluate_item(
         source_url=golden.source_url,
         field_scores=field_scores,
         judgement=judgement,
+        judge_usage=judge_usage,
         human_summary_scores=golden.human_summary_scores,
         metadata=RunMetadata(
             extraction_model=extraction_model,

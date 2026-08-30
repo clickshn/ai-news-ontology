@@ -223,6 +223,20 @@ class RunMetadata(BaseModel):
     judge_prompt_sha256: str | None = None
 
 
+class JudgeUsage(BaseModel):
+    """judge 호출 1회의 사용량.
+
+    `thinking_tokens` 는 `output_tokens` 의 **부분집합**이다 — 비용을 계산할 때
+    두 값을 더하면 안 된다 (D-019).
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    thinking_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    latency_s: float | None = None
+
+
 class ItemScore(BaseModel):
     """골든셋 1건에 대한 채점 결과. `eval/scores/*.jsonl` 한 줄이 이 모양이다."""
 
@@ -230,6 +244,7 @@ class ItemScore(BaseModel):
     source_url: str
     field_scores: list[FieldScore]
     judgement: SummaryJudgement | None = None
+    judge_usage: JudgeUsage | None = None
     human_summary_scores: HumanSummaryScores | None = None
     metadata: RunMetadata = Field(default_factory=RunMetadata)
     errors: list[str] = Field(default_factory=list)
