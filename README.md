@@ -4,8 +4,22 @@ AI 뉴스·논문·업계 소식을 자동 수집해 **온톨로지 스키마로
 **LLM-judge 기반 eval 로 요약 품질을 검증**한 뒤, **Obsidian Vault 에 마크다운
 노트로 적재**하는 개인 파이프라인.
 
-> **현재 상태: 스캐폴딩 (v0.1)** — 디렉터리 구조, 온톨로지 스키마, 설정 뼈대까지
-> 완료. 수집/추출/eval 실행 로직은 아직 구현 전이다.
+> **현재 상태** — 수집 → 관련성 게이트 → 추출 → 기업명 정규화 → Obsidian 적재까지
+> 한 건이 실제로 끝까지 흐른다. **품질 검증(eval) 실행 파이프라인은 아직 없다.**
+>
+> | 단계 | 상태 |
+> |---|---|
+> | `collectors/` — RSS·Atom 수집, 소스별 본문 품질 표기 | 동작 |
+> | 관련성 게이트 — Haiku 4.5, `temperature: 0` 고정 | 동작 |
+> | 추출 — Opus 5, `extract_ontology.v3.md` | 동작 |
+> | `extraction/normalize.py` — 기업명 alias 정규화 | 동작 |
+> | `obsidian_writer/` — frontmatter + 위키링크 노트 적재 | 동작 |
+> | `observability/` — 스킵·미등록 기업 JSONL 기록 | 동작 |
+> | `eval/` — 골든셋 대조 + LLM-judge 실행 | **미구현** (형식과 루브릭만 있다) |
+> | Langfuse trace, 토큰·비용 집계 | 미구현 |
+>
+> 골든셋은 아직 **후보 2건**뿐이고 사람이 라벨링한 정답은 0건이다
+> ([`eval/golden_set/README.md`](eval/golden_set/README.md)).
 
 ## 왜 만드는가
 
