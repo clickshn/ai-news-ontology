@@ -4,13 +4,16 @@
      LLM 호출 trace, 토큰/비용, eval 점수 추이, 실패 건을 기록한다.
 
 구성:
-    logging.py   구조화 로그(JSON lines) 설정. TODO
+    events.py    레코드 정의 + PipelineObserver Protocol + JSONL 구현. 구현됨.
+    logs/        JSON Lines 로그 (.gitignore 대상). 실행 시 생성.
     tracing.py   Langfuse 연동 래퍼. 키가 없으면 no-op. TODO
     metrics.py   실행 단위 집계(처리 건수, 실패율, 토큰, 비용). TODO
 
 설계 메모:
-    - .env 에 LANGFUSE_* 가 없으면 전부 no-op 으로 동작해야 한다.
+    - 관측이 꺼져 있거나 쓰기에 실패해도 파이프라인은 그대로 돌아야 한다.
       관측 도구가 없다고 파이프라인이 죽으면 안 된다. (결정 로그 D-008)
-    - 기록할 최소 항목: 소스 URL, 모델 ID, 프롬프트 버전, 토큰 수,
-      ValidationError 원문, 정규화 실패한 기업명(unknown_company).
+    - 스킵은 append-only(감사 로그), 미등록 기업은 upsert(작업 큐). 목적이
+      다르면 쓰기 방식도 다르다. (결정 로그 D-036)
+    - 정규화 실패의 **기록**은 파이프라인 층에서 한다. 스키마 validator 는
+      테스트·재검증에서도 돌아서 누적 카운트를 오염시킨다. (결정 로그 D-035)
 """

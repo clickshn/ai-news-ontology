@@ -169,3 +169,16 @@ eval:
   thresholds:
     field_accuracy: 0.90         # 통제어휘 필드 정확도
     summary_faithfulness: 4.0    # LLM-judge 1~5 평균
+
+# --- 7. 관측(observability) ---------------------------------------------------
+observability:
+  # false 로 두면 NullObserver 로 폴백한다. 관측을 끄는 것이 파이프라인을 끄는
+  # 것이 되어서는 안 된다 (D-008).
+  enabled: true
+  # 프로젝트 루트 기준 상대 경로. logs/ 는 .gitignore 대상이라 커밋되지 않는다.
+  log_dir: "observability/logs"
+  # 게이트가 버린 항목. **append-only 감사 로그** — 한 줄이 한 사건이다 (D-036).
+  skips_filename: "skips.jsonl"
+  # 정규화 실패한 기업/기관 표기. **이름당 한 줄로 upsert 하는 작업 큐**다.
+  # occurrence_count 로 정렬해 company_aliases 에 무엇을 넣을지 정한다 (D-036).
+  unknown_companies_filename: "unknown_companies.jsonl"

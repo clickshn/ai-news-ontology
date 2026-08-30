@@ -27,8 +27,16 @@ from typing import Any
 from collectors.base import RawItem
 from collectors.rss import collect, load_config
 from extraction.llm import AnthropicClient, LLMClient, SchemaMismatchError, StructuredResult, Usage
-from extraction.schema import NewsOntology, RelevanceGate, ReleaseType, TechDomain
-from observability.events import InMemoryObserver, NullObserver, PipelineObserver, SkipRecord
+from extraction.schema import NewsOntology, ReleaseType, RelevanceGate, TechDomain
+from observability.events import (
+    InMemoryObserver,
+    MultiObserver,
+    NullObserver,
+    PipelineObserver,
+    SkipRecord,
+    UnknownCompanyRecord,
+    observer_from_config,
+)
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 DEFAULT_PROMPT = "extract_ontology.v3.md"
@@ -146,6 +154,33 @@ def extract_ontology(
     )
 
 
+def record_unknown_companies(
+    ontology: NewsOntology,
+    item: RawItem,
+    observer: PipelineObserver,
+) -> None:
+    """정규화에 실패한 기업 표기를 사전 보강 큐로 흘린다 (D-035).
+
+    `CompanyRef` validator 가 아니라 **여기서** 기록하는 이유는 두 가지다.
+
+    1. 레코드에 필요한 `source_article` 을 validator 는 볼 수 없다. `CompanyRef`
+       는 자기가 어느 기사에서 나왔는지 모르고, 알게 하려면 스키마에 기사
+       정보를 끌고 들어와야 한다.
+    2. validator 는 테스트·골든셋 로딩·재검증에서도 돈다. 거기서 남긴 줄은
+       실제 파이프라인 실행에서 나온 게 아니라 `occurrence_count` 를 오염시킨다.
+       "몇 번 나왔는가"가 사전 보강 판단의 근거이므로 이 오염은 치명적이다.
+
+    즉 정규화 **판정**은 스키마 층(항상, 결정적으로)이고, 정규화 실패의
+    **기록**은 파이프라인 층(실제 실행에서만)이다.
+    """
+    for company in ontology.companies:
+        if company.resolved:
+            continue
+        observer.record_unknown_company(
+            UnknownCompanyRecord(raw_name=company.raw, source_article=str(item.url))
+        )
+
+
 # ---------------------------------------------------------------------------
 # 1단계: 관련성 게이트
 # ---------------------------------------------------------------------------
@@ -239,6 +274,7 @@ def process_item(
         return PipelineResult(item=item, relevance=relevance)
 
     extraction = extract_ontology(item, extraction_client, prompt=extraction_prompt)
+    record_unknown_companies(extraction.ontology, item, observer)
     return PipelineResult(item=item, relevance=relevance, extraction=extraction)
 
 
@@ -275,7 +311,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"본문   : {len(item.body)}자")
     print("=" * 72)
 
-    observer = InMemoryObserver()
+    # 화면 출력용(메모리) + 파일 기록용(config 에 따라 JSONL 또는 no-op).
+    # 관측이 꺼져 있으면 두 번째가 NullObserver 라 CLI 동작은 그대로다 (D-008).
+    memory = InMemoryObserver()
+    observer = MultiObserver(memory, observer_from_config(config))
     gate_client = AnthropicClient.from_config(config, stage="relevance_gate")
 
     # --gate-only 는 정밀 추출 클라이언트를 아예 만들지 않는다.
@@ -311,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
     if result.skipped:
         print("-" * 72)
         print("정밀 추출을 건너뛰었습니다. 스킵 기록:")
-        for record in observer.skips:
+        for record in memory.skips:
             print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
         return 0
 
@@ -325,6 +364,12 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
         )
     )
+    if memory.unknown_companies:
+        print("-" * 72)
+        print("미등록 기업 (company_aliases 보강 후보):")
+        for record in memory.unknown_companies:
+            print(f"  - {record.raw_name}")
+
     print("-" * 72)
     print(
         f"gate: model={result.relevance.usage.model} "

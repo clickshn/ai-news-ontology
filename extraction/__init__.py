@@ -5,9 +5,9 @@
 
 구성:
     schema.py    온톨로지 스키마 정의 (SSoT). 구현됨.
-    llm.py       LLM 프로바이더 추상화 (Protocol). 구현됨(정의만).
-    extractor.py 프롬프트 조립 -> LLM 호출 -> NewsNote 검증. TODO
-    normalize.py company_aliases 기반 기업명 정규화. TODO
+    llm.py       LLM 프로바이더 추상화 (Protocol) + Anthropic 구현. 구현됨.
+    extractor.py 프롬프트 조립 -> 관련성 게이트 -> LLM 호출 -> 검증. 구현됨.
+    normalize.py company_aliases 기반 기업명 정규화. 구현됨.
 
 설계 메모:
     - LLM 출력은 신뢰하지 않는다. 반드시 pydantic 으로 검증하고,
