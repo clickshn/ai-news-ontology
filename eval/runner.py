@@ -52,7 +52,7 @@ from extraction.schema import NewsOntology
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JUDGE_PROMPT_DIR = PROJECT_ROOT / "eval" / "judge_prompts"
-DEFAULT_JUDGE_PROMPT = "summary_quality.v1.md"
+DEFAULT_JUDGE_PROMPT = "summary_quality.v2.md"
 DEFAULT_GOLDEN_SET_DIR = PROJECT_ROOT / "eval" / "golden_set"
 DEFAULT_SCORES_DIR = PROJECT_ROOT / "eval" / "scores"
 

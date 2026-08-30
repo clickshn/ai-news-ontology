@@ -303,7 +303,7 @@ def test_judge_result_is_parsed(golden, ontology):
     assert score.judgement.mean_score == pytest.approx(14 / 3, abs=1e-3)
     assert judge.calls[0]["output_model"] is SummaryJudgement
     assert score.metadata.judge_model == "fake-judge"
-    assert score.metadata.judge_prompt == "summary_quality.v1.md"
+    assert score.metadata.judge_prompt == "summary_quality.v2.md"
     assert score.metadata.judge_prompt_sha256
 
 
@@ -350,6 +350,18 @@ def test_judge_human_gap_is_computed_when_available(golden, ontology):
     )
     score = evaluate_item(labeled, ontology, judge_client=FakeJudge())
     assert score.judge_human_gap == pytest.approx(14 / 3 - 4, abs=1e-3)
+
+
+def test_judge_prompt_v1_is_preserved():
+    """v1 은 보존한다. v2 가 고친 규칙이 v1 에 새어들지 않았는지 (D-041)."""
+    v1 = load_judge_prompt("summary_quality.v1.md")
+    v2 = load_judge_prompt()
+    # 루브릭 본문은 v1 이 User, v2 가 System 섹션에 있으므로 전체를 본다.
+    v1_text, v2_text = v1.system + v1.user, v2.system + v2.user
+    assert "3~5문장" in v1_text, "v1 의 옛 기준이 사라졌다 = v1 을 고쳤다는 뜻"
+    assert "2~3문장" in v2_text and "3~5문장" not in v2_text
+    assert "아래 JSON 만 출력한다" in v1_text
+    assert "아래 JSON 만 출력한다" not in v2_text
 
 
 def test_judge_variables_handle_empty_body(golden):
@@ -440,7 +452,7 @@ def test_scores_record_reproduction_metadata(tmp_path, golden, ontology):
     meta = score.metadata
     assert meta.extraction_prompt == "extract_ontology.v3.md"
     assert meta.extraction_prompt_sha256
-    assert meta.judge_prompt_sha256 == prompt_sha256("summary_quality.v1.md")
+    assert meta.judge_prompt_sha256 == prompt_sha256("summary_quality.v2.md")
     assert meta.evaluated_at.tzinfo is not None
 
 
