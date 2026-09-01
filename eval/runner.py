@@ -37,6 +37,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
+from eval.analysis import repeat_stats
 from eval.schema import (
     FieldScore,
     GoldenItem,
@@ -318,6 +319,7 @@ def evaluate_item(
     judge_prompt: Prompt | None = None,
     extraction_model: str | None = None,
     extraction_prompt: str | None = None,
+    repeat_index: int = 0,
 ) -> ItemScore:
     """골든셋 1건 + 모델 출력 1건 -> 채점 결과.
 
@@ -346,6 +348,7 @@ def evaluate_item(
     return ItemScore(
         item_id=golden.id,
         source_url=golden.source_url,
+        repeat_index=repeat_index,
         field_scores=field_scores,
         judgement=judgement,
         judge_usage=judge_usage,
@@ -383,7 +386,25 @@ def summarize(
     thresholds = dict(thresholds or {})
     notes: list[str] = []
 
-    accuracies = [s.field_accuracy for s in scores if s.field_accuracy is not None]
+    # 반복 채점은 **같은 항목을 여러 번 부른 것**이므로 항목 수로 세지 않는다.
+    # 10회 반복을 10건으로 세면 표본이 늘어난 것처럼 보이는데, 늘어난 것은
+    # judge 호출 횟수이지 골든셋이 아니다 (D-043 이 경계한 바로 그 착시).
+    item_ids = list(dict.fromkeys(s.item_id for s in scores))
+    per_item = {
+        item_id: [s for s in scores if s.item_id == item_id] for item_id in item_ids
+    }
+    stats = [repeat_stats(rows, item_id=item_id) for item_id, rows in per_item.items()]
+    judge_calls = sum(1 for s in scores if s.judgement is not None)
+    repeat = max((len(rows) for rows in per_item.values()), default=1)
+
+    # 필드 대조는 API 를 부르지 않아 반복 회차마다 같은 값이 나온다. 회차를 그대로
+    # 평균에 넣으면 항목 하나가 반복 횟수만큼의 가중치를 갖게 되므로, **항목 안에서
+    # 먼저 평균을 낸 뒤 항목끼리 평균**한다. 반복이 없으면 기존 동작과 같다.
+    accuracies: list[float] = []
+    for rows in per_item.values():
+        row_scores = [r.field_accuracy for r in rows if r.field_accuracy is not None]
+        if row_scores:
+            accuracies.append(sum(row_scores) / len(row_scores))
     field_accuracy = round(sum(accuracies) / len(accuracies), 4) if accuracies else None
 
     faiths = [s.judgement.faithfulness.score for s in scores if s.judgement is not None]
@@ -402,9 +423,18 @@ def summarize(
     if faithfulness is not None and "summary_faithfulness" in thresholds:
         passed["summary_faithfulness"] = faithfulness >= thresholds["summary_faithfulness"]
 
+    if repeat > 1:
+        notes.append(
+            f"항목당 {repeat}회 반복 채점 — 골든셋은 {len(item_ids)}건이다. "
+            "반복은 judge 흔들림 폭(D-042)을 재는 것이지 표본을 늘리는 것이 아니다"
+        )
+
     return RunSummary(
         run_id=run_id,
-        item_count=len(scores),
+        item_count=len(item_ids),
+        judge_call_count=judge_calls,
+        repeat=repeat,
+        repeat_stats=stats,
         field_accuracy=field_accuracy,
         summary_faithfulness=faithfulness,
         thresholds=thresholds,
@@ -496,6 +526,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--predictions", required=True, help="모델 출력 JSONL")
     parser.add_argument("--scores-dir", default=None, help="결과를 쓸 디렉터리")
     parser.add_argument("--include-drafts", action="store_true", help="초안도 채점 (권장하지 않음)")
+    parser.add_argument(
+        "--judge-prompt",
+        default=DEFAULT_JUDGE_PROMPT,
+        help=f"judge 루브릭 파일명 (기본 {DEFAULT_JUDGE_PROMPT}). 루브릭 간 비교에 쓴다",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help=(
+            "항목당 judge 반복 호출 횟수. judge 는 결정적이지 않으므로(D-042) "
+            "흔들림 폭을 보려면 2회 이상이 필요하다. **호출 수·비용이 배로 늘어난다**"
+        ),
+    )
     judge = parser.add_mutually_exclusive_group()
     judge.add_argument(
         "--judge",
@@ -504,6 +548,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     judge.add_argument("--no-judge", action="store_true", help="대조만 한다 (기본)")
     args = parser.parse_args(argv)
+
+    # 결과에 한국어와 em-dash 가 섞여 있는데 Windows 기본 콘솔은 cp949 다.
+    # 재설정하지 않으면 **채점이 끝나고 파일까지 쓴 뒤** 출력에서만 죽는다.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
 
     config = load_config()
     eval_cfg = config.get("eval") or {}
@@ -525,10 +577,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    if args.repeat < 1:
+        print("[중단] --repeat 는 1 이상이어야 합니다", file=sys.stderr)
+        return 1
+    if args.repeat > 1 and not args.judge:
+        print(
+            "[중단] --repeat 는 --judge 와 함께 씁니다. 필드 대조는 API 를 부르지 않아 "
+            "회차마다 같은 값이 나옵니다",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        judge_prompt = load_judge_prompt(args.judge_prompt) if args.judge else None
+    except (OSError, ValueError) as exc:
+        print(f"[중단] 루브릭을 읽을 수 없습니다: {exc}", file=sys.stderr)
+        return 1
+
     judge_client = judge_client_from_config(config) if args.judge else None
     if judge_client is not None:
+        gradable = sum(1 for i in golden_items if i.id in predictions)
         print(
-            f"[judge] model={judge_client.model} 항목={len(golden_items)}건 — 실제 API 호출",
+            f"[judge] model={judge_client.model} rubric={args.judge_prompt} "
+            f"항목={gradable}건 x {args.repeat}회 = 호출 {gradable * args.repeat}회 — 실제 API 호출",
             file=sys.stderr,
         )
 
@@ -538,7 +609,20 @@ def main(argv: list[str] | None = None) -> int:
         if actual is None:
             print(f"[skip] {item.id}: 예측이 없습니다", file=sys.stderr)
             continue
-        scores.append(evaluate_item(item, actual, judge_client=judge_client))
+        for index in range(args.repeat):
+            score = evaluate_item(
+                item,
+                actual,
+                judge_client=judge_client,
+                judge_prompt=judge_prompt,
+                repeat_index=index,
+            )
+            scores.append(score)
+            if judge_client is not None:
+                # 회차마다 즉시 보고한다. N회가 몇 분씩 걸리는데 끝까지 침묵하면
+                # 중간에 실패가 누적돼도 알 수 없다.
+                axis = score.judgement.completeness.score if score.judgement else "실패"
+                print(f"  [{index + 1}/{args.repeat}] {item.id} 완결성={axis}", file=sys.stderr)
 
     summary = summarize(scores, run_id=new_run_id(), thresholds=eval_cfg.get("thresholds") or {})
     path = write_scores(scores, summary, scores_dir=scores_dir)

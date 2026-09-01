@@ -246,6 +246,10 @@ class ItemScore(BaseModel):
 
     item_id: str
     source_url: str
+    repeat_index: int = Field(
+        default=0,
+        description="같은 항목을 반복 채점할 때의 회차(0부터). 반복하지 않으면 0",
+    )
     field_scores: list[FieldScore]
     judgement: SummaryJudgement | None = None
     judge_usage: JudgeUsage | None = None
@@ -278,11 +282,88 @@ class ItemScore(BaseModel):
         return round(self.judgement.mean_score - human_mean, 3)
 
 
+class AxisStats(BaseModel):
+    """채점 축 하나를 N회 반복했을 때의 분포.
+
+    judge 는 결정적이지 않다(D-042). 평균만 남기면 "3.0"이 매번 3인지 1과 5를
+    오간 결과인지 구분할 수 없다 — **흔들림 폭이 이 프로젝트에서 재려는 값**이므로
+    표준편차·최빈값·전체 도수를 함께 남긴다.
+
+    `stdev` 는 표본표준편차이고 `n < 2` 면 None 이다. 1회 관측에서 편차를 0 으로
+    적으면 "흔들리지 않았다"로 읽히는데, 그건 재지 못한 것이다.
+    """
+
+    axis: str
+    n: int
+    mean: float
+    stdev: float | None = None
+    mode: int | None = None
+    minimum: int
+    maximum: int
+    distribution: dict[str, int] = Field(
+        default_factory=dict, description="점수 -> 관측 횟수. 키는 '1'~'5' 문자열"
+    )
+
+    @property
+    def spread(self) -> int:
+        """최대-최소. 0 이면 N회가 모두 같은 점수였다는 뜻이다."""
+        return self.maximum - self.minimum
+
+    @property
+    def mode_ratio(self) -> float:
+        """최빈값이 차지한 비율. 중심이 얼마나 뭉쳐 있는지."""
+        if self.n == 0 or self.mode is None:
+            return 0.0
+        return round(self.distribution.get(str(self.mode), 0) / self.n, 3)
+
+
+class RepeatStats(BaseModel):
+    """항목 1건을 N회 반복 채점한 결과의 집계.
+
+    `slot_adherence` 는 **점수와 독립적인 과정 검사**다. v3 루브릭은 근거에
+    슬롯별 충족 여부를 밝히라고 요구하는데(D-045), 모델이 그 지시를 따르지
+    않았다면 점수가 몇이든 "루브릭이 틀렸다"가 아니라 **"루브릭이 적용되지
+    않았다"** 로 읽어야 한다. 두 경우의 후속 조치가 완전히 다르므로 갈라 둔다.
+    """
+
+    item_id: str
+    judge_prompt: str | None = None
+    n: int
+    faithfulness: AxisStats | None = None
+    completeness: AxisStats | None = None
+    concision: AxisStats | None = None
+    human_scores: HumanSummaryScores | None = None
+    slot_adherence: float | None = Field(
+        default=None,
+        description="완결성 근거가 4슬롯을 모두 열거한 회차의 비율. 슬롯 개념이 없는 루브릭(v2 이하)에서는 None",
+    )
+    slot_fill_rate: dict[str, float] = Field(
+        default_factory=dict,
+        description="슬롯별로 '충족' 판정을 받은 회차의 비율. 점수가 아니라 판정 근거가 재현되는지를 본다",
+    )
+    failures: int = Field(default=0, description="judge 호출이 실패한 회차 수")
+
+    def gap(self, axis: str) -> float | None:
+        """축별 judge 평균 - 사람 점수. 사람 점수가 없으면 None."""
+        stats = getattr(self, axis, None)
+        if stats is None or self.human_scores is None:
+            return None
+        human = {
+            "faithfulness": self.human_scores.faithfulness,
+            "completeness": self.human_scores.completeness,
+            "concision": self.human_scores.concision,
+        }[axis]
+        return round(stats.mean - human, 3)
+
+
 class RunSummary(BaseModel):
     """실행 1회 전체의 집계. 임계값 판정이 여기서 난다."""
 
     run_id: str
-    item_count: int
+    item_count: int = Field(description="채점한 **서로 다른** 골든셋 항목 수")
+    judge_call_count: int = Field(default=0, description="실제로 성공한 judge 호출 수")
+    repeat: int = Field(default=1, description="항목당 반복 채점 회차 수")
+    repeat_stats: list[RepeatStats] = Field(default_factory=list)
     field_accuracy: float | None = None
     summary_faithfulness: float | None = None
     thresholds: dict[str, float] = Field(default_factory=dict)
