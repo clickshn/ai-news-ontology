@@ -1,0 +1,47 @@
+{
+  "_읽어주세요": [
+    "확정 완료(2026-09-01). expected 는 사람이 확인한 정답이다.",
+    "모델 초안에서 사람이 3곳을 고쳤다: 기술영역 2개→1개, 관련기업 4개→3개, 관련기존기술 1개→0개. 발표유형은 초안 유지를 확인했다."
+  ],
+  "id": "20260829-geeknews-33003-openai-cursor",
+  "source_url": "https://news.hada.io/topic?id=33003",
+  "_original_source": "GeekNews 는 애그리게이터다. 파이프라인이 보는 URL 은 토픽 페이지이고, 원 출처는 아래와 같다.",
+  "original_source_url": "https://openai.com/index/our-decision-on-cursor-following-its-acquisition-by-spacex/",
+  "status": "confirmed",
+  "_input": "수집 파이프라인은 본문을 보존하지 않는다. 이 파일이 원문의 유일한 사본이다.",
+  "input": {
+    "제목": "SpaceX의 Cursor 인수 이후 OpenAI가 내린 결정",
+    "본문": "OpenAI는 SpaceX가 인수한 Cursor에 모델을 공급하는 계약을 종료하기로 했으며, 서비스 차단 예정일은 2026년 11월 12일임\n계약상 허용되는 최대 통지 기간을 적용해 개발자의 접근 시간을 확보하지만, 향후 출시 모델은 Cursor에 제공하지 않음\nElon Musk의 회사들이 계약과 이용약관을 위반했던 사례로 인해, SpaceX가 OpenAI 기술을 약관에 맞게 사용한다고 확신하기 어렵다고 판단함\nCursor와의 맞춤 계약은 지배권 변경 후 제한된 기간에만 취소할 수 있으며, 고도화된 AI와 차기 모델 Astra에는 더 높은 안전 책임이 요구됨\n약 4년간 이어진 협력은 종료 수순에 들어가며, Cursor에서 OpenAI 모델을 사용해 온 개발자에게는 전환 과정 지원이 제공될 예정임\n\n계약 종료 일정과 판단 근거\n\nOpenAI는 2026년 8월 28일 SpaceX에 Cursor용 OpenAI 모델 공급 계약을 단계적으로 종료하겠다고 통보함\n서비스 차단 예정일은 2026년 11월 12일임\n개발자가 Cursor에서 OpenAI 모델을 최대한 오래 이용할 수 있도록 계약이 허용하는 가장 긴 통지 기간을 적용함\n대규모 파트너와 협력할 때는 맞춤 계약을 통해 이용약관 준수와 대규모 통합 환경의 안전성을 확보함\n이번 판단에는 Elon Musk의 회사들과 발생했던 계약 위반 사례가 영향을 미침\nMusk가 Twitter를 인수한 뒤 현재 SpaceX 소속이 된 해당 회사가 OpenAI와의 계약 조건을 위반함\nMusk는 2026년 초 선서 증언에서 현재 SpaceX 소속인 xAI가 OpenAI 데이터를 증류해 이용약관을 위반했음을 인정함\n해당 조건은 xAI 자체 이용약관과도 유사함\n\n향후 모델 공급과 개발자 전환\n\nCursor와의 맞춤 계약에는 지배권 변경 이후 제한된 기간에만 계약을 취소할 수 있는 조항이 있음\nAI 역량이 발전하면서 차기 모델 Astra가 이용약관에 따라 사용되도록 보장할 책임도 커짐\n계약 종료일은 가능한 한 늦게 잡되, Astra를 비롯한 향후 모델은 Cursor에 공급하지 않기로 함\nOpenAI는 약 4년간 협력해 온 Cursor 팀과 제품, 개발자 커뮤니티가 구축한 성과를 높이 평가함\n직접적인 영향을 받는 대상은 Cursor에서 OpenAI 모델을 사용하는 개발자이며, OpenAI는 전환 과정 지원에 적극 나설 예정임"
+  },
+  "_expected": "모델 초안 (extract_ontology.v4.md / claude-opus-5, 2026-09-01). 사람이 확인·수정할 것.",
+  "expected": {
+    "기술영역": [
+      "LLM"
+    ],
+    "발표유형": "Partnership/Contract",
+    "관련기업": [
+      "OpenAI",
+      "Cursor",
+      "SpaceX"
+    ],
+    "관련기존기술": [],
+    "영향도": {
+      "점수": 3,
+      "근거": "OpenAI-Cursor 간 모델 공급 계약 종료는 Cursor 사용자(개발자)에게 실질적 전환 부담을 주지만, 업계 전체의 판도를 바꾸는 사건은 아니다. 계약 관계 변화 자체보다 그 배경(Musk 관련 계약 위반 이력)이 더 주목할 만한 요소다."
+    }
+  },
+  "reference_summary": null,
+  "_human_summary_scores": "judge 와 **같은 축**으로 사람이 매긴 1~5 점수. {\"충실성\": n, \"완결성\": n, \"간결성\": n} 형태. 완결성은 summary_quality.v3.md 의 4슬롯(①사건 ②범위 ③정도 ④경위) 충족 개수 기준.",
+  "human_summary_scores": {
+    "충실성": 5,
+    "완결성": 3,
+    "간결성": 5
+  },
+  "labeled_by": "netisa",
+  "labeled_at": "2026-09-01",
+  "_notes": "모델 출력과 다르게 라벨한 부분과 그 이유.",
+  "notes": "이 항목은 `Partnership/Contract`(D-056) 를 실제 기사에 처음 적용한 사례다.\n발표유형 Partnership/Contract 확인 — v2/v3의 Funding/M&A에서 변경. 기사에 인수와 계약 종료가 모두 등장하나 1차 사건 규칙에 따라 계약 종료(거래 관계 변화)를 선택. D-057의 'Community/Discussion으로 밀릴 위험'은 실현되지 않음(GeekNews 소스이나 사건 주체가 OpenAI/SpaceX이므로 기업 사건으로 정확히 분류됨).\n기술영역에서 Application/Product 제외 — 기사 주제가 제품 자체가 아니라 모델 공급 관계의 변화이므로 LLM 하나로 좁힘.\n관련기존기술에서 Distillation 제외 — xAI의 데이터 증류는 위반 사례의 예시로 언급된 것일 뿐, 이 기사가 다루는 사건이 딛고 선 기존 기술이 아님.\n관련기업에서 xAI 제외 — '단순 언급만 된 회사는 넣지 않는다' 규칙 적용. xAI는 사건 당사자가 아니라 판단 근거로 인용된 과거 사례일 뿐.\n완결성 3점 근거: 4슬롯 중 ①사건(계약 종료 통보)과 ③정도(차단일, Astra 미공급)는 충족, ④경위(Musk/xAI 위반 인정)는 부분 충족(지배권 변경 조항 언급 없음), ②범위(Cursor 사용 개발자에 대한 영향)는 요약에서 명확히 누락됨.",
+  "_draft_source": "초안 출처. 확정 시 사람이 무엇을 바꿨는지 대조하는 데 쓴다.",
+  "draft_source": "extract_ontology.v4.md / claude-opus-5 / 2026-09-01 실행 (v2 초안 대체)",
+  "labeling_guideline": "post-2026-08-30"
+}

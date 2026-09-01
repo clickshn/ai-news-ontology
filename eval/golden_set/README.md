@@ -35,7 +35,7 @@
 | 날짜 | 항목 | 실행 | 상태 |
 |---|---|---|---|
 | 2026-08-29 | GeekNews `바이브코딩으로 만든 퍼저가 FFmpeg의 0 나누기 버그를 발견` ([#33001](https://news.hada.io/topic?id=33001)) | gate(Haiku) → extract **v1 → v2 재추출 완료** | **확정 후보** (아래 판단 참고) |
-| 2026-08-29 | GeekNews `SpaceX의 Cursor 인수 이후 OpenAI가 내린 결정` ([#33003](https://news.hada.io/topic?id=33003)) | gate(Haiku) → extract v2 | **보류** — `발표유형` 이견 있음 (아래 참고) |
+| 2026-08-29 | GeekNews `SpaceX의 Cursor 인수 이후 OpenAI가 내린 결정` ([#33003](https://news.hada.io/topic?id=33003)) | gate(Haiku) → extract v2 → **v4 재추출** | **확정 완료** (2026-09-01) |
 | 2026-08-31 | arXiv `S3Gym: Can LLMs Turn Self-Testing and Self-Judging into Self-Improvement?` ([2608.31100](https://arxiv.org/abs/2608.31100v1)) | gate(Haiku) → extract v3 | **확정 완료** (2026-09-01) |
 
 확정 절차: 위 항목을 사람이 라벨링 → 아래 형식의 JSON 파일로 저장 →
@@ -60,7 +60,17 @@ D-020·D-021·D-022 세 규칙이 **모두 라벨을 바꿨다.**
 
 ### #33003 (OpenAI/Cursor) — 보류 사유 (2026-09-01 재확인)
 
-**2026-09-01 판단: 보류를 유지하고, 이 기사를 골든셋에 넣지 않는다.**
+**2026-09-01 해결.** `Partnership/Contract` 를 추가하고(D-056) v4 로 재추출해
+확정했다. `발표유형` 이 `Funding/M&A` → **`Partnership/Contract`**, SpaceX 역할이
+`경쟁사` → **`인수 주체`** 로 바뀌었고, GeekNews 소스인데도 `Community/Discussion`
+으로 밀리지 않았다(D-057 검증). 사람은 모델 초안에서 세 필드를 고쳤다 — `기술영역`
+2개→1개, `관련기업` 4개→3개(xAI 제외), `관련기존기술` 1개→0개.
+
+아래는 보류 당시의 기록이며, 판단의 경로를 남기기 위해 지우지 않는다.
+
+---
+
+**2026-09-01 판단(보류 시점): 보류를 유지하고, 이 기사를 골든셋에 넣지 않는다.**
 `GoldenExpectation.release_type` 은 필수 필드이고 어휘 7개 중 하나여야 한다 —
 "이 항목은 이 필드를 채점하지 않는다"는 탈출구가 스키마에 없다. 그래서 어휘를
 그대로 둔 채 확정하면 **정답 칸에 `Funding/M&A` 를 못 박게 되는데, 그건 사람이

@@ -162,6 +162,7 @@ def test_repo_golden_set_loads():
     # 추가할 때는 이 목록도 함께 늘린다.
     assert [i.id for i in items] == [
         "20260829-geeknews-33001-ffmpeg",
+        "20260829-geeknews-33003-openai-cursor",
         "20260831-arxiv-2608.31100-s3gym",
     ]
 
@@ -184,6 +185,29 @@ def test_repo_second_item_labeled_under_v3_guideline():
     assert item.labeling_guideline == "post-2026-08-30"
     assert [d.value for d in item.expected.tech_domains] == ["Agent", "Eval/Governance"]
     assert item.human_summary_scores.completeness == 5
+
+
+def test_repo_third_item_uses_the_new_release_type():
+    """#33003 은 `Partnership/Contract`(D-056) 를 쓰는 유일한 항목이다.
+
+    어휘를 추가한 근거가 된 기사이므로, 이 라벨이 조용히 바뀌면 어휘 추가의
+    실증 사례가 사라진다. 사람이 모델 초안에서 세 필드를 고친 것도 함께
+    잡는다 — 초안을 그대로 승격한 것이 아니라는 증거다.
+    """
+    item = {i.id: i for i in load_golden_set()}["20260829-geeknews-33003-openai-cursor"]
+    assert item.expected.release_type.value == "Partnership/Contract"
+    assert [d.value for d in item.expected.tech_domains] == ["LLM"]
+    assert item.expected.prior_art == []          # 모델은 Distillation 을 뽑았다
+    assert "xAI" not in item.expected.companies   # 단순 언급은 넣지 않는다
+
+
+def test_repo_golden_set_covers_distinct_release_types():
+    """세 항목이 서로 다른 발표유형을 쓴다.
+
+    같은 값만 모이면 `발표유형` 정확도가 한 값에 대한 측정이 되어 버린다.
+    """
+    types = {i.expected.release_type.value for i in load_golden_set()}
+    assert types == {"Community/Discussion", "Partnership/Contract", "Paper"}
 
 
 def test_repo_golden_set_human_score_differs_from_model():
