@@ -129,6 +129,7 @@ ontology:
     - Funding/M&A
     - Benchmark/Report
     - Community/Discussion       # 2026-08-29 추가. 결정 로그 D-021
+    - Partnership/Contract       # 2026-09-01 추가. 결정 로그 D-056
 
   impact:                        # 영향도 — 1~5 리커트, 근거 한 줄 병기
     scale: [1, 2, 3, 4, 5]

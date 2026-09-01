@@ -58,6 +58,27 @@ def test_community_discussion_exists_in_both(ontology_config):
     assert "Community/Discussion" in ontology_config["release_type"]
 
 
+def test_partnership_contract_exists_in_both(ontology_config):
+    """D-056 으로 추가한 값이 Enum 과 config.yaml 양쪽에 있어야 한다.
+
+    "조직 간 거래 관계가 바뀌었다"가 `Funding/M&A` 로 밀려나던 빈 칸을 메운
+    값이다(#33003). 어느 한쪽에서만 지워지면 오분류가 조용히 돌아온다.
+    """
+    assert ReleaseType.PARTNERSHIP.value == "Partnership/Contract"
+    assert "Partnership/Contract" in ontology_config["release_type"]
+
+
+def test_release_type_count_is_pinned(ontology_config):
+    """어휘 크기를 고정한다.
+
+    값이 늘거나 줄면 **과거 라벨의 의미가 바뀔 수 있으므로**(D-022) 조용히
+    지나가면 안 된다. 이 숫자를 고칠 때는 schema.md 표와 결정 로그도 함께
+    고쳤는지 확인할 것.
+    """
+    assert len(list(ReleaseType)) == 8
+    assert len(ontology_config["release_type"]) == 8
+
+
 def test_release_type_naming_convention():
     """기존 6개 값의 명명 패턴(PascalCase, 구분자는 '/')을 따르는지."""
     for member in ReleaseType:

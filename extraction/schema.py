@@ -59,6 +59,7 @@ class ReleaseType(StrEnum):
     FUNDING = "Funding/M&A"                  # 투자 유치, 인수합병, 상장
     BENCHMARK = "Benchmark/Report"           # 공식 조직의 벤치마크 결과, 시장·산업 보고서
     COMMUNITY = "Community/Discussion"       # 커뮤니티·개인의 버그 발견, 이슈 제기, 사용기, 토론
+    PARTNERSHIP = "Partnership/Contract"     # 조직 간 거래 관계의 체결·변경·종료 (공급, 제휴, 라이선싱)
 
 
 # ---------------------------------------------------------------------------
