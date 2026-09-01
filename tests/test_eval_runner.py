@@ -158,13 +158,32 @@ def test_repo_golden_set_loads():
     labeler·플레이스홀더 없음)을 실제 파일로도 고정해 둔다.
     """
     items = load_golden_set()
-    assert [i.id for i in items] == ["20260829-geeknews-33001-ffmpeg"]
+    # 확정 항목은 자산이므로 **조용히 줄거나 바뀌면 알아채야 한다.** 새 항목을
+    # 추가할 때는 이 목록도 함께 늘린다.
+    assert [i.id for i in items] == [
+        "20260829-geeknews-33001-ffmpeg",
+        "20260831-arxiv-2608.31100-s3gym",
+    ]
 
-    item = items[0]
-    assert item.expected.impact is not None
-    assert item.input.body, "본문이 비면 재추출·judge 채점을 재현할 수 없다"
-    assert item.labeled_by and item.labeled_at
-    assert item.human_summary_scores is not None, "사람 점수가 있어야 judge 편향을 잰다"
+    for item in items:
+        assert item.expected.impact is not None, item.id
+        assert item.input.body, f"{item.id}: 본문이 비면 재추출·judge 채점을 재현할 수 없다"
+        assert item.labeled_by and item.labeled_at, item.id
+        assert item.human_summary_scores is not None, f"{item.id}: 사람 점수가 있어야 judge 편향을 잰다"
+
+
+def test_repo_second_item_labeled_under_v3_guideline():
+    """S3Gym 은 v3 4슬롯 기준으로 사람이 라벨링한 첫 항목이다.
+
+    #33001 은 `pre-2026-08-30` 이라 사람과 judge 가 다른 눈금을 썼다. 이 항목이
+    **같은 눈금을 쓴 유일한 항목**이라는 사실이 판단의 전제이므로 고정해 둔다.
+    사람이 모델 초안(기술영역 3개)을 2개로 줄인 것도 함께 잡는다 — 초안을 그대로
+    승격한 것이 아니라는 증거다.
+    """
+    item = {i.id: i for i in load_golden_set()}["20260831-arxiv-2608.31100-s3gym"]
+    assert item.labeling_guideline == "post-2026-08-30"
+    assert [d.value for d in item.expected.tech_domains] == ["Agent", "Eval/Governance"]
+    assert item.human_summary_scores.completeness == 5
 
 
 def test_repo_golden_set_human_score_differs_from_model():
@@ -173,7 +192,8 @@ def test_repo_golden_set_human_score_differs_from_model():
     영향도를 모델은 2, 사람은 1로 봤다. 이 불일치가 채점기에 잡히는 것이
     골든셋을 두는 이유이므로, 값이 조용히 같아지면 알아채야 한다.
     """
-    item = load_golden_set()[0]
+    items = {i.id: i for i in load_golden_set()}
+    item = items["20260829-geeknews-33001-ffmpeg"]
     assert item.expected.impact.score == 1
     assert item.human_summary_scores.completeness == 1
 

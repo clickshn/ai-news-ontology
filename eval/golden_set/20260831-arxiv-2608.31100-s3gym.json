@@ -1,0 +1,48 @@
+{
+  "_읽어주세요": [
+    "확정 완료(2026-09-01). expected 는 사람이 확인한 정답이다.",
+    "기술영역만 모델 초안(3개)에서 사람이 수정(2개)했고, 나머지 통제어휘 필드는 초안 유지를 확인했다."
+  ],
+  "id": "20260831-arxiv-2608.31100-s3gym",
+  "source_url": "https://arxiv.org/abs/2608.31100v1",
+  "status": "confirmed",
+  "_input": "수집 파이프라인은 본문을 보존하지 않는다. 이 파일이 원문의 유일한 사본이다.",
+  "input": {
+    "제목": "S3Gym: Can LLMs Turn Self-Testing and Self-Judging into Self-Improvement?",
+    "본문": "Large language models (LLMs) increasingly interact with external environments and accumulate substantial behavioral experience, yet existing agent benchmarks largely evaluate them as fixed policies. It therefore remains unclear whether an agent can actively test its behavior, judge the resulting experience, and use that experience to improve future decisions. We introduce \\textbf{S\\textsuperscript{3}Gym}, an interactive benchmark for evaluating LLM self-improvement through three coupled capabilities: \\textbf{Self-Testing}, \\textbf{Self-Judging}, and \\textbf{Self-Improvement}. S$^3$Gym separates permissive exploration from strict held-out evaluation and instantiates this protocol in seven text-based games with executable environment verifiers. We evaluate three pathways for incorporating interaction experience: direct History ICL, score-conditioned Summary Memory, and parameter Training.\n Our experiments reveal that self-improvement is neither automatic nor uniform. Context-level experience improves performance for several model--game pairs, but the most effective pathway depends strongly on the task structure: summaries are beneficial when experience can be compressed into reusable strategic rules, yet often underperform raw history when success depends on precise, state-contingent information. Parameter training produces substantial gains on some tasks, but also exhibits unstable improvement and severe negative transfer on others. These findings show that recognizing successful actions is insufficient; agents must also transform feedback into executable and transferable policies. S$^3$Gym provides a unified framework for diagnosing this process and identifying the bottlenecks that prevent agents from translating interaction experience into reliable self-improvement."
+  },
+  "_expected": "모델 초안 (extract_ontology.v3.md / claude-opus-5, 2026-09-01). 사람이 확인·수정할 것.",
+  "expected": {
+    "기술영역": [
+      "Agent",
+      "Eval/Governance"
+    ],
+    "발표유형": "Paper",
+    "관련기업": [],
+    "관련기존기술": [
+      "In-Context Learning",
+      "LLM Agent",
+      "Text-based Games",
+      "Held-out Evaluation",
+      "Negative Transfer"
+    ],
+    "영향도": {
+      "점수": 3,
+      "근거": "LLM 에이전트 자기개선을 다루는 벤치마크 논문으로, 새로운 평가 프레임워크와 실증 결과(요약 압축의 조건부 우열, 파라미터 학습의 부정 전이)는 에이전트 개발자에게 실무적 참고가치가 있으나, 업계 전반의 판도를 바꾸는 수준은 아니다."
+    }
+  },
+  "reference_summary": null,
+  "_human_summary_scores": "judge 와 **같은 축**으로 사람이 매긴 1~5 점수. {\"충실성\": n, \"완결성\": n, \"간결성\": n} 형태로 채운다. 완결성은 summary_quality.v3.md 의 4슬롯(①사건 ②범위 ③정도 ④경위) 충족 개수 기준.",
+  "human_summary_scores": {
+    "충실성": 5,
+    "완결성": 5,
+    "간결성": 5
+  },
+  "labeled_by": "netisa",
+  "labeled_at": "2026-09-01",
+  "_notes": "모델 출력과 다르게 라벨한 부분과 그 이유.",
+  "notes": "기술영역에서 Training/Finetuning 제외 — 파라미터 학습은 논문이 비교하는 세 경로 중 하나로만 등장하며 논문의 핵심 주제(벤치마크 제안)가 아니므로 제외. Agent 분류 기준(D-022)과 같은 논리.\n완결성 5점 근거: 4슬롯(사건/범위/정도/경위) 전부 요약에 명시적으로 담김 — S3Gym 제안(사건), 7개 텍스트 게임(범위), 세 경로 조건부 우열과 부정 전이(정도), 탐색/held-out 구간 분리(경위).",
+  "_draft_source": "초안 출처. 확정 시 사람이 무엇을 바꿨는지 대조하는 데 쓴다.",
+  "draft_source": "extract_ontology.v3.md / claude-opus-5 / 2026-09-01 실행",
+  "labeling_guideline": "post-2026-08-30"
+}
