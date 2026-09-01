@@ -11,7 +11,7 @@ from datetime import date
 import pytest
 
 from collectors.base import RawItem
-from extraction.extractor import check_relevance, load_prompt, process_item
+from extraction.extractor import DEFAULT_PROMPT, check_relevance, load_prompt, process_item
 from extraction.llm import LLMClient, StructuredResult, Usage
 from extraction.schema import NewsOntology, RelevanceGate
 from observability.events import InMemoryObserver, PipelineObserver, SkipRecord
@@ -159,7 +159,7 @@ def test_gate_and_extraction_use_different_prompts(ai_item):
     result = process_item(ai_item, gate_client=gate, extraction_client=extract)
 
     assert result.relevance.prompt_name == "relevance_gate.v1.md"
-    assert result.extraction.prompt_name == "extract_ontology.v3.md"
+    assert result.extraction.prompt_name == DEFAULT_PROMPT   # 버전이 아니라 "기록된 이름 == 실제 사용본"을 고정한다
     assert gate.calls[0]["system"] != extract.calls[0]["system"]
 
 

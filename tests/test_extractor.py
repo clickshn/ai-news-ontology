@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from collectors.base import RawItem
-from extraction.extractor import build_variables, extract_ontology, load_prompt
+from extraction.extractor import DEFAULT_PROMPT, build_variables, extract_ontology, load_prompt
 from extraction.llm import AnthropicClient, LLMClient, SchemaMismatchError, StructuredResult, Usage
 from extraction.schema import NewsOntology, ReleaseType, TechDomain
 
@@ -102,7 +102,7 @@ def test_extract_ontology_returns_validated_model(item):
     assert result.ontology.tech_domains == [TechDomain.LLM, TechDomain.REASONING]
     assert result.ontology.release_type is ReleaseType.PAPER
     assert result.ontology.impact.score == 3
-    assert result.prompt_name == "extract_ontology.v3.md"
+    assert result.prompt_name == DEFAULT_PROMPT   # 버전이 아니라 "기록된 이름 == 실제 사용본"을 고정한다
     assert result.usage.input_tokens == 1200
 
 

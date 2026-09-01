@@ -39,7 +39,7 @@ from observability.events import (
 )
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
-DEFAULT_PROMPT = "extract_ontology.v3.md"
+DEFAULT_PROMPT = "extract_ontology.v4.md"
 GATE_PROMPT = "relevance_gate.v1.md"
 
 _SYSTEM_RE = re.compile(r"^#\s*System\s*$", re.MULTILINE)
