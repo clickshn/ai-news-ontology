@@ -41,8 +41,15 @@ from extraction.extractor import (
     check_relevance,
     extract_ontology,
     load_prompt,
+    record_unknown_companies,
 )
 from extraction.llm import AnthropicClient, SchemaMismatchError
+from observability.events import (
+    NullObserver,
+    PipelineObserver,
+    SkipRecord,
+    observer_from_config,
+)
 
 # 1단계는 30건이다. 실수로 250건을 돌리는 것을 코드가 막는다 — 승인 게이트를
 # 사람의 기억에만 맡기지 않는다 (MARA ADR-018 Implementation, 계약 §12).
@@ -160,11 +167,16 @@ def run_collect(
     skip_stored: bool = True,
     seed_from_mara: str | None = None,
     seed_doc_ids: Sequence[str] = (),
+    observer: PipelineObserver | None = None,
 ) -> list[str]:
     """게이트 -> 추출 -> 보존. 이미 보존된 doc_id 는 기본적으로 건너뛴다.
 
     보존된 것을 건너뛰는 이유는 재실행 비용이다. 같은 30건을 다시 돌리면
     같은 돈을 또 낸다 (계약 §12.3).
+
+    **관측은 `process_item` 과 같은 것을 남긴다.** export 는 파이프라인의 새 소비자일
+    뿐이고, 이 경로로 돌렸다는 이유로 게이트 스킵(D-016)과 미등록 기업(D-035)이
+    기록되지 않으면 두 큐가 어느 실행에서 비었는지 알 수 없게 된다.
     """
     injected, pools = build_plan(
         config,
@@ -183,6 +195,7 @@ def run_collect(
     gate_client = AnthropicClient.from_config(config, stage="relevance_gate")
     extraction_client = AnthropicClient.from_config(config, stage="extraction")
 
+    observer = observer or NullObserver()
     seen: set[str] = set(store.doc_ids()) if skip_stored else set()
     stored_ids: list[str] = []
     budget = max_extractions
@@ -207,6 +220,16 @@ def run_collect(
             "usage": vars(relevance.usage),
         }
         if not relevance.is_relevant:
+            observer.record_skip(
+                SkipRecord(
+                    url=str(item.url),
+                    title=item.title,
+                    source_name=item.source_name,
+                    reason=relevance.gate.reason,
+                    model=relevance.usage.model,
+                    prompt_name=relevance.prompt_name,
+                )
+            )
             print(f"[gate] 스킵 {doc_id}: {relevance.gate.reason}", file=sys.stderr)
             seen.add(doc_id)
             return False
@@ -220,6 +243,7 @@ def run_collect(
             seen.add(doc_id)
             return False
 
+        record_unknown_companies(result.ontology, item, observer)
         extraction_payload = {
             "prompt_name": result.prompt_name,
             "prompt_sha256": extraction_sha,
@@ -344,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             gate_prompt_name=args.gate_prompt,
             seed_from_mara=args.seed_from_mara,
             seed_doc_ids=args.seed_doc_id,
+            observer=observer_from_config(config),
         )
         print(f"보존 {len(stored)}건")
         return 0 if stored else 1

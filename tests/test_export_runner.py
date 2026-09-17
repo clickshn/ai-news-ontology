@@ -245,3 +245,62 @@ class TestCollect:
         run_collect({}, take={"GeekNews": 1}, urls=[], store=store)
 
         assert [p.name for p in tmp_path.iterdir()] == ["s"]
+
+
+class TestObservability:
+    """export 경로도 `process_item` 과 같은 것을 관측한다 (D-016, D-035).
+
+    이 경로로 돌렸다는 이유로 두 큐가 비면, 나중에 "그 실행에서 아무것도 안 걸렸다"와
+    "기록 자체가 안 됐다"를 구분할 수 없다.
+    """
+
+    def test_gate_skips_are_recorded(self, patched, tmp_path):
+        from observability.events import InMemoryObserver
+
+        items = [_item("https://news.hada.io/topic?id=1", "비-AI 기사")]
+        patched["install"](items, relevant={"비-AI 기사": False})
+        observer = InMemoryObserver()
+
+        run_collect(
+            {}, take={"GeekNews": 1}, urls=[], store=ExtractionStore(tmp_path / "s"),
+            observer=observer,
+        )
+
+        assert len(observer.skips) == 1
+        assert observer.skips[0].source_name == "GeekNews"
+        assert observer.skips[0].model == "claude-haiku-4-5-20251001"
+
+    def test_unresolved_companies_reach_the_queue(self, patched, tmp_path, monkeypatch):
+        from observability.events import InMemoryObserver
+
+        items = [_item("https://news.hada.io/topic?id=1", "기사")]
+        gate, extraction = patched["install"](items)
+
+        original = extraction.parse_into
+
+        def with_company(*, system, user, output_model):
+            result = original(system=system, user=user, output_model=output_model)
+            if output_model is NewsOntology:
+                result.value.companies.append(
+                    __import__("extraction.schema", fromlist=["CompanyRef"]).CompanyRef(원문표기="Cursor")
+                )
+            return result
+
+        monkeypatch.setattr(extraction, "parse_into", with_company)
+        observer = InMemoryObserver()
+
+        run_collect(
+            {}, take={"GeekNews": 1}, urls=[], store=ExtractionStore(tmp_path / "s"),
+            observer=observer,
+        )
+
+        assert [r.raw_name for r in observer.unknown_companies] == ["Cursor"]
+
+    def test_default_observer_is_a_no_op(self, patched, tmp_path):
+        """관측을 끄는 것이 파이프라인을 끄는 것이 되어서는 안 된다 (D-008)."""
+        items = [_item("https://news.hada.io/topic?id=1", "기사")]
+        patched["install"](items)
+
+        stored = run_collect({}, take={"GeekNews": 1}, urls=[], store=ExtractionStore(tmp_path / "s"))
+
+        assert len(stored) == 1
