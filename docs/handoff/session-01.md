@@ -1,0 +1,415 @@
+# Session 01 핸드오프 — 출력 계약 v1 export 경로 구현 (MARA Session 0.5a)
+
+- **날짜:** 2026-09-17
+- **범위:** MARA 출력 계약(`contract_version=1.0`) 생산자 측 구현, `--urls` 입력,
+  1단계 30건 실행과 §12.2 체크리스트 판정, README 결정 로그의 ADR 이관,
+  `.claude/` 규칙·훅·governance 분리 이식
+- **브랜치:** `feat/export-contract-v1` (커밋 7개, **push 하지 않음**)
+- **테스트:** `.venv/Scripts/python.exe -m pytest tests/ -q` → **398 passed**
+  (기준선 298 + 신규 100). 기존 298건은 손대지 않았다
+- **MARA 레포:** **읽기만 했다. 쓰기 0건.** 계약·ADR·핸드오프·코퍼스 스냅샷·골든셋을
+  읽었고 한 바이트도 고치지 않았다
+
+> **0.5b 가 먼저 읽을 곳:** §2(산출물 경로와 레코드 수), §3(체크리스트 13항목),
+> §6(arXiv 코퍼스 조사 — v1.0 baseline 해석에 영향), §7(2단계 비용 재계산).
+
+---
+
+## 1. export 경로 상태 — 구현 완료, 계약 전 항목 충족
+
+새 패키지 `export/` (9개 모듈). 계약 문서는 **런타임에 읽지 않고** 필요한 규칙을
+복사해 고정했다 — 참조였다면 MARA 쪽 상수 변경이 우리 출력을 조용히 바꾼다.
+
+| 모듈 | 역할 | 계약 |
+|---|---|---|
+| `doc_id.py` | URL 정규화 6단계 + `doc_id` 생성 (arXiv 특례 포함) | §4 |
+| `contract.py` | 계약 상수·어휘 스냅샷·색인 규칙 | §5, §6 |
+| `store.py` | 추출 결과 원본 보존소 | §12.3 |
+| `record.py` | 보존 결과 → 레코드 1줄. **LLM 을 부르지 않는다** | §3 |
+| `exporter.py` | JSONL + manifest 쓰기 | §2, §11.3 |
+| `urls.py` | `--urls` 주입 (arXiv API) | §12.1 |
+| `mara_seed.py` | `--seed-from-mara` 주입 (MARA 스냅샷, 읽기 전용) | §12.1 우회로, §6 참고 |
+| `runner.py` | CLI `plan` / `collect` / `export` | — |
+| `conformance.py` | 1단계 자체검사 13항목 | §12.2 |
+| `usage.py` | 소스별 실측 usage 집계 | 승인 게이트 근거 |
+
+**`collect` 와 `export` 를 한 명령으로 합치지 않았다.** 합치면 "형식이 틀려서 다시
+돌린다"가 "추출을 다시 돌린다"와 같은 동작이 되고, §12.3 이 막으려던 구조가 되살아난다.
+
+### 건드리지 않은 것
+
+사람이 라벨링한 골든셋 3건, 기존 테스트 298건, README 결정 로그 서사 — **전부 그대로다.**
+`README.md` 는 이번 세션에서 한 줄도 고치지 않았다.
+
+---
+
+## 2. export 산출물 — 실제 경로와 레코드 수
+
+**이 레포는 `data/` 를 `.gitignore` 한다.** 계약 §2 의 "파일은 커밋한다"는 MARA 쪽
+스냅샷 기준이므로, **0.5b 에서 아래 파일을 MARA 의 `data/corpus/` 로 옮겨 그쪽에서
+커밋한다.**
+
+경로는 **이 레포 루트 기준 상대 경로**다. 절대 경로를 적지 않는 이유는 공개 레포의
+커밋에 개인 로컬 경로를 남기지 않기 위해서다 (`docs/governance.md` 커밋 전 확인).
+
+| 파일 | 경로 (`ai-news-ontology` 루트 기준) | 줄 수 |
+|---|---|---:|
+| arXiv JSONL | `data/corpus/arxiv/ontology-20260917-120733.jsonl` | **10** |
+| news JSONL | `data/corpus/news/ontology-20260917-120733.jsonl` | **20** |
+| manifest | `data/corpus/ontology-20260917-120733.manifest.json` | — |
+| 추출 원본 보존소 | `data/extractions/*.json` (30개 파일) | **30** |
+
+- `export_id` = `ontology-20260917-120733`
+- **총 30 레코드** (arxiv 10 + news 20)
+- `exporter` = `ai-news-ontology@702854f`
+- `vocab_version` = `config=1;schema_sha256=2b42e09be94dae352…`
+- `prompt_version` = `extract_ontology.v4.md`, `prompt_sha256` = `9ff5a9d39156b3d3…`
+  (계약 §3.3 예시와 같은 값)
+
+### manifest `counts`
+
+```
+total 30 · indexable 23 · excluded_empty_text 7
+by_source          : arxiv 10, news 20
+by_source_name     : GeekNews 10, arXiv cs.CL (Atom API) 8, Hugging Face Blog 5,
+                     OpenAI News 3, arXiv (MARA snapshot seed) 2, Google DeepMind Blog 2
+by_release_type    : Paper 11, Benchmark/Report 6, Community/Discussion 6,
+                     ProductLaunch 6, OpenSource 1
+by_tech_domain     : Eval/Governance 15, LLM 12, Application/Product 9, Agent 8,
+                     Safety/Alignment 6, Training/Finetuning 6, Multimodal 5,
+                     Reasoning 3, Infra/MLOps 2, Data/Synthetic 1,
+                     Hardware/Chip 1, Inference/Serving 1
+companies_unresolved: 13
+```
+
+표본 구성은 계약 §12.1 대로다 — 중복 2 / arXiv 피드 8 / GeekNews 10 /
+OpenAI·DeepMind 5 / HF Blog 5.
+
+---
+
+## 3. 1단계 체크리스트 13항목 — **12 PASS / 0 FAIL / 1 PENDING**
+
+재현:
+
+```bash
+python -m export.conformance --export-id ontology-20260917-120733 \
+    --mara-root ../multiagent-research-lab \
+    --injected arXiv:2412.05449v1 arXiv:2605.21404v1 \
+    --seeded   arXiv:2412.05449v1 arXiv:2605.21404v1 --expected-total 30
+```
+
+| # | 항목 | 판정 | 근거 |
+|---|---|---|---|
+| 1 | e2e 흐름 | PASS | JSONL 30줄 + manifest 1개, 최상위 17키·타입 검사 통과. ⚠️ 적재는 **생산자 측 재구현**으로 확인했다 |
+| 2 | provenance 5키 | PASS | 30줄 전부 존재·비어있지 않음 |
+| 3 | prompt_sha256 실측 일치 | PASS | 프롬프트 파일 실측 해시와 일치 (자리표시자 아님) |
+| 4 | text_origin | PASS | 30줄 전부 `source_text` |
+| 5 | arXiv 중복 병합 | PASS* | 기존 16 + 신규 8 = **24건**, 주입 2건이 새 `doc_id` 를 만들지 않음. **\*한계는 아래 참고** |
+| 6 | 골든셋 보존 | PASS | `expected_doc_ids` 8건 전부 병합 후 조회 가능, 근거 text 그대로 |
+| 7 | doc_id 결정성 | PASS | 보존소에서 2회 재생성한 30줄이 바이트 동일 |
+| 8 | text 상한·text_chars | PASS | 전 줄 `len(text)<=4000`, `text_chars==len(text)`. 최소 0 / 중앙 166 / 최대 1,915자 |
+| 9 | indexable 재계산 일치 | PASS | 30줄 전부 일치. `false` 7건 = HF Blog 5 + **DeepMind 2** |
+| 10 | 통제어휘 대조 | PASS | 전 값이 manifest `vocab` 안 |
+| 11 | published_at null 처리 | PASS(약) | 빈 문자열 0건. ⚠️ **null 도 0건** — 이번 표본에 발행일 누락 항목이 없어 null 경로가 실행되지 않았다. 단위 테스트로만 고정돼 있다 |
+| 12 | manifest 합계 | PASS | `total=30`, `indexable(23) + excluded_empty_text(7) = 30` |
+| 13 | 한국어 레코드 색인 | **PENDING** | 실제 Chroma 적재와 `lang="ko"` 조회가 필요 — **0.5b 대기**. 레코드 자체는 `lang="ko"` 10건이 있고 전부 `indexable=true` |
+
+### ⚠️ 이 판정표를 어떻게 읽어야 하는가
+
+**이 통과는 MARA 로더도 통과한다는 근거가 아니다.** 계약 §7 검증의 정본은 MARA 쪽
+구현이고, `export/conformance.py` 는 **같은 명세를 생산자 쪽에서 재구현한 것**이다.
+두 구현이 명세를 다르게 읽는 지점이 있어도 이 검사기는 그것을 볼 수 없다 — 자기가
+이해한 명세와 자기가 만든 출력을 대조하기 때문이다.
+
+→ **§12.2 의 최종 판정은 0.5b 에서 MARA 로더로 다시 내린다.** 이 표는 그때까지 잠정이다.
+같은 한계가 `export/README.md` 와 `export/conformance.py` 모듈 docstring 에도 있다.
+
+**5번의 한계(\*):** 주입 2건의 원문을 MARA 스냅샷에서 읽어 왔으므로(§6 참고)
+**"병합 시 기존 text 유지"는 자명하게 통과한다.** 실질적으로 검증된 것은
+URL→`doc_id` 동일화와 새 `doc_id` 미생성이다. 판정 detail 에도 같은 문장이 들어 있다.
+
+**9번:** 계약 §12.2-9 는 "HF Blog 5건이 false 로 떨어진다"고 적었는데, 실제로는
+**7건**(HF 5 + DeepMind 2)이다. §12.1 이 DeepMind 표본을 "일부 0자"로 예고했으므로
+모순이 아니라 예고된 범위 안이다.
+
+---
+
+## 4. 2단계 실행 여부 — **실행하지 않았다**
+
+1단계 30건만 실행했다. 나머지 220건은 **별도 승인 사항**이고 이번 세션에서 받지 않았다.
+비용 재계산은 §7.
+
+---
+
+## 5. 실측 usage — 소스별 (재현: `python -m export.usage`)
+
+| 소스 | 건수 | 본문 중앙값 | 추출 in/out (건당) | 게이트 in/out | 건당 비용 | 소계 |
+|---|---:|---:|---:|---:|---:|---:|
+| Hugging Face Blog | 5 | 0자 | 9,144 / 909 | 2,867 / 119 | $0.0719 | $0.360 |
+| GeekNews | 10 | 166자 | 9,283 / 871 | 3,012 / 105 | $0.0717 | $0.717 |
+| arXiv cs.CL (Atom API) | 8 | 1,644자 | 9,646 / 632 | 3,195 / 115 | $0.0678 | $0.543 |
+| arXiv (MARA snapshot seed) | 2 | 1,684자 | 9,656 / 527 | 3,180 / 154 | $0.0654 | $0.131 |
+| Google DeepMind Blog | 2 | 0자 | 9,160 / 534 | 2,880 / 103 | $0.0625 | $0.125 |
+| OpenAI News | 3 | 152자 | 9,163 / 466 | 2,877 / 105 | $0.0609 | $0.183 |
+
+- **보존 30건 합계 $2.058** (건당 평균 $0.0686, thinking 9,430토큰 — 출력에 포함된
+  부분집합이라 더하지 않는다)
+- **게이트 스킵 19건**(전부 GeekNews)은 보존소에 없어 위 표 밖이다. 약 $0.067 추정
+  → **이번 실행 총액 약 $2.13**
+
+### 승인 시 제시한 추정과의 차이
+
+| | 금액 |
+|---|---|
+| MARA session-09 계획치 | $0.9 |
+| 이번 세션 사전 추정 | 약 $1.7 (범위 $1.2~2.5) |
+| **실측** | **약 $2.13** |
+
+사전 추정 범위 안이고 계획치의 **2.4배**다. 원인은 §7.
+
+### 실측에서 드러난 두 가지
+
+1. **추출 입력 토큰이 D-019 의 6,160 이 아니라 약 9,200 이다.** 본문 길이와 무관하게
+   (HF Blog 0자 = 9,144, arXiv 1,644자 = 9,646) 거의 고정이다 — 시스템 프롬프트 v4 와
+   structured outputs 스키마가 입력의 대부분이라는 뜻이다. 본문 길이는 단가에 거의
+   영향을 주지 않는다.
+2. **GeekNews 게이트 통과율이 10/29 = 34%다.** D-014/D-015 가 쓴 "약 60% AI 관련"보다
+   크게 낮다. 스킵 사유는 전부 타당해 보인다(포스트퀀텀 암호화, EU 통상, .NET JIT,
+   러시아 도메인 정책, AWS 데이터센터 피해). 표본 1회이므로 단정하지 않되,
+   2단계 GeekNews 수집량 산정에 이 값을 쓰는 것이 안전하다.
+
+---
+
+## 6. ⚠️ MARA arXiv 코퍼스 16건이 live arXiv 에서 조회되지 않는다 — 조사 결과
+
+**이번 세션에서 고치지 않았다.** 사용자 지시대로 원인 조사만 기록한다.
+
+### 관측된 사실
+
+| # | 사실 |
+|---|---|
+| 1 | MARA `data/corpus/arxiv/*.json` 의 **16건 전부**가 arXiv API `id_list` 조회에서 **0건**을 돌려준다. 배치 조회와 개별 조회 모두 |
+| 2 | 같은 엔드포인트에서 `id_list` 자체는 동작한다 — `1706.03762`, `2005.14165`, `2303.08774`, `2312.11805`, `2401.04088` 는 정상 조회됨 |
+| 3 | `cat:cs.CL` 최근 피드는 정상 동작한다 (이번 표본의 arXiv 8건이 여기서 왔다) |
+| 4 | **`id_list` 에 false negative 가 있다** — 같은 피드가 몇 초 전에 돌려준 3건 중 `2609.19143v1` 한 건이 `id_list` 로는 0건이었다 |
+| 5 | 제목·키워드 `search_query`(`ti:`, `all:`)는 **실존이 확실한 논문에도 0건**을 돌려준다. 이 경로로는 확인이 불가능하다 |
+| 6 | MARA 의 `doc_id` 조립은 **자기일관적이다** — 16건 전부 `doc_id == "arXiv:" + url.rsplit("/")[-1]` 이다 |
+
+### 가설별 판정
+
+| 가설 | 판정 |
+|---|---|
+| **ingest 스크립트의 ID 조립이 틀렸다** | **배제.** `scripts/ingest_corpus.py:100-115` 가 Atom `<id>` 의 마지막 경로 조각을 **그대로** 쓴다. ID 를 만들어낼 수 없고, 사실 6 이 저장된 값과 URL 이 어긋나지 않음을 확인해 준다 |
+| **ID 가 지어진 것 / 코퍼스가 실물 arXiv 응답이 아니다** | **배제되지 않음.** 16/16 이 전부 MISS 인 것은 사실 4 의 false negative 만으로 설명되지 않는다 — 알려진 실존 ID 의 조회 성공률이 대략 5/6 인데 16건이 모두 실패할 확률은 무시할 수준이다 |
+| **엔드포인트가 부분 스냅샷이라 과거 수집분을 더 이상 서빙하지 않는다** | **배제되지 않음.** 사실 4·5 가 이 엔드포인트의 조회 경로에 결함이 있음을 보여준다 |
+
+### 왜 이게 중요한가 (사용자 지적 그대로)
+
+**코퍼스가 실물 arXiv 가 아니었다면 두 가지가 같이 달라진다.**
+
+- **v1.0 baseline 해석** — 지금까지의 측정치가 "공개 arXiv 초록 16건 위에서 잰 값"이
+  아니게 된다.
+- **ADR-004 부합 여부** — "공개 자료만 넣는다"의 전제가 그 코퍼스에 대해 성립하는지
+  다시 확인해야 한다.
+
+### 0.5b 에서 해야 할 확인
+
+- [ ] MARA 쪽에서 `data/corpus/arxiv/*.json` 의 수집 경로·시점을 커밋 이력으로 역추적
+- [ ] `scripts/ingest_corpus.py` 를 지금 돌려 같은 질의가 같은 16건을 돌려주는지 확인
+      (429 로 막히면 그 자체가 정보다)
+- [ ] 위 결과에 따라 ADR-004 재확인 여부 판단. **결과가 어느 쪽이든 ADR 에 남긴다**
+
+---
+
+## 7. 2단계 비용 재계산 + `$2.92/100건` 의 출처
+
+### `$2.92/100건` 은 어디서 나왔나 — **출처는 명확하다**
+
+생산자 레포 `observability/README.md` 의 "게이트 비용 절감 실측 (D-015)" 절이다.
+
+```
+게이트 없음:  100 × $0.042875                     = $4.2875
+게이트 있음:  100 × $0.003460  +  60 × $0.042875  = $2.9185
+              (전량 게이트)      (통과분만 추출)
+```
+
+**즉 `$2.92` 는 "100건을 게이트에 넣어 60건만 추출"하는 비용이다 — 산출된 레코드는
+100건이 아니라 60건이다.** 단가 자체(Haiku $1/$5, Opus $5/$25)는 현재 공시가와 같다.
+
+### MARA 계획치가 어긋난 이유 — 두 가지가 겹쳤다
+
+1. **분모 오해.** session-09 는 `$0.0292/건` 을 **산출 레코드 1건당 단가**처럼 써서
+   `30건 × $0.0292 = $0.9`, `250건 ≈ $7` 을 냈다. 그런데 그 단가에는 이미 40% 스킵
+   할인이 들어 있다. 1단계가 요구하는 것은 **레코드 30건**이지 게이트 투입 30건이 아니다.
+2. **토큰 수가 낡았다.** D-019 의 추출 입력 6,160토큰은 이전 프롬프트 버전 기준이다.
+   v4 + structured outputs 스키마에서는 **약 9,200토큰**이고, 출력도 483 → 평균 약
+   700토큰이다. 건당 추출 단가가 $0.042875 → **약 $0.0635** 로 48% 오른다.
+
+### 2단계 220 레코드 재추정 (실측 기준)
+
+| 항목 | 계산 | 금액 |
+|---|---|---:|
+| 추출·게이트 (보존되는 220건) | 220 × $0.0686 | **$15.1** |
+| GeekNews 스킵 게이트 오버헤드 | 구성에 따라 $0.5 ~ $1.5 | **~$1.0** |
+| **합계** | | **약 $16** |
+
+- **MARA session-09 의 `2단계 220건 ≈ $6.4` 는 실측 기준 약 2.5배 낮다.**
+- 소스 구성에 거의 좌우되지 않는다 — 입력 토큰이 본문 길이와 무관하게 고정에 가깝기
+  때문이다(§5). 다만 **GeekNews 비중이 높을수록 스킵 오버헤드가 커진다**(통과율 34%).
+- 규모를 줄이려면 손댈 곳은 본문이 아니라 **프롬프트 입력**이다. 시스템 프롬프트가
+  입력의 대부분이므로 **prompt caching 이 가장 큰 레버**다(현재 미적용).
+
+> 2단계를 실행하기 전에 이 금액으로 **다시 승인을 받아야 한다.** $6.4 승인으로
+> $16 을 쓰면 승인 게이트가 이름만 남는다.
+
+---
+
+## 8. §8.1 필드 소비 등급 — **이 표본으로 확정하지 않는다**
+
+계약 §8.1 은 판정 임계값을 데이터 전에 등록해 뒀다. 이번 표본에 기계적으로 적용하면:
+
+| 확정할 것 | 사전 등록 기준 | 이번 표본 | 기계적 판정 |
+|---|---|---|---|
+| `release_type` 필터 유용성 | 상위 1개 값 > 80% 면 제외 | Paper **37%** | 필터 후보 유지 |
+| `tech_domains` 선택도 | `Agent`+`Eval` < 70% 면 예측이 틀림 | **33%** | 예측 뒤집힘 → 배선 후보 |
+| `impact_score` 쏠림 | — | 2:12 / 3:17 / 4:1 (3점에 57%) | 정렬 용도로도 선택도 낮음 |
+| `MIN_TEXT_CHARS` | 분포를 보고 결정 | 0 / 166 / 1,915 (0자 7건, 141~175자 13건, 1,301~1,915자 10건) | **삼봉 분포** |
+
+**⚠️ 그러나 이 판정을 채택하면 안 된다.** 계약 §8.1 은 확정 근거를 **"첫 export 의
+manifest counts"** 로 정했고, 그것은 코퍼스 export 를 뜻한다. 이번 30건은 **계약 경로를
+골고루 밟도록 의도적으로 층화한 검증 표본**이다 — HF Blog 5건은 `indexable=false` 경로를
+태우려고 넣은 것이지 코퍼스 구성 비율이 아니다. 비대표 표본에 사전 등록 임계값을
+적용하는 것은 **그 임계값을 미리 적어 둔 이유를 스스로 무너뜨리는 일**이다.
+
+→ **§8.1 판정은 2단계 export 의 manifest 로 한다.** 위 표는 참고값으로만 남긴다.
+
+`MIN_TEXT_CHARS` 에 대해서는 한 가지가 분명해졌다: **0자와 141자 사이에 값이 없다.**
+1 과 141 사이 어디를 골라도 결과가 같으므로, v1 의 `1` 을 바꿀 실익이 지금은 없다.
+
+---
+
+## 9. 이관한 ADR — **16건 (원본 60건 중 32건 흡수)**
+
+`docs/adr/` 신설. `adr-recorder` 스킬의 이관 모드로 옮겼고, **원본 날짜와 근거를 그대로**
+썼다. README 결정 로그는 **한 줄도 고치지 않았다.**
+
+필터는 `docs/governance.md` 의 **되돌리기 비용** 기준이다. 같은 결정이 D 번호 여럿으로
+쪼개져 있으면 하나로 합쳤다.
+
+| ADR | 원본 D |
+|---|---|
+| ADR-001 통제어휘와 자유 필드의 혼합 | D-001 |
+| ADR-002 어휘 단일 출처와 런타임 주입 | D-002, D-012 |
+| ADR-003 LLM 계층 — Protocol + structured outputs | D-004, D-009 |
+| ADR-004 프롬프트 파일 버저닝 | D-010, D-023 |
+| ADR-005 소스 구성과 본문 커버리지 | D-013, D-014 |
+| ADR-006 저비용 관련성 게이트 | D-015, D-017 |
+| ADR-007 `요약` 을 별도 필드로 | D-027 |
+| ADR-008 어휘 변경 정책 | D-021, D-022 |
+| ADR-009 기업명 정규화 — 퍼지 매칭 금지 | D-025, D-026 |
+| ADR-010 Vault 쓰기 충돌 정책 | D-028 |
+| ADR-011 frontmatter 키 영문화 | D-003(부분 번복), D-029 |
+| ADR-012 eval 채점 규칙 | D-039, D-040 |
+| ADR-013 모델별 파라미터와 게이트 temperature | D-018, D-032, D-033 |
+| ADR-014 judge 루브릭 버전 전환과 사전 등록 검증 | D-041, D-045, D-048 |
+| ADR-015 API 결과 원본을 먼저 디스크에 | D-052 |
+| ADR-016 `Partnership/Contract` 추가와 v4 프롬프트 | D-056~D-059 |
+
+### 미이관 28건 — 전부 목록으로 남겼다
+
+`docs/adr/README.md` 에 **D 번호 28개 각각에 대해 왜 기준에 안 걸리는지 한 줄씩** 적었다.
+임의 누락이 아니라 적용된 필터라는 것이 보이게 하기 위한 것이다.
+경계에 가까운 것은 **D-020**(자유 필드 표기 규칙)과 **D-046**(라벨링 가이드라인)이고,
+둘 다 과거 산출물을 소급해서 틀리게 만들지 않는다는 점에서 기준 밖으로 뒀다.
+
+**출력 계약 자체의 ADR 은 이 레포에 만들지 않았다** — 그 결정은 MARA ADR-018 이고
+정본이 그쪽에 있다. 이쪽 구현 규칙은 `.claude/rules/export.md` 와 `export/README.md` 에 있다.
+
+---
+
+## 10. `.claude/` 구조 이식 — 완료, 훅 스모크 테스트 포함
+
+MARA 의 구조를 그대로 가져왔다.
+
+| 항목 | 상태 |
+|---|---|
+| `docs/governance.md` | 신설. `CLAUDE.md` 에 있던 팀 규칙 전체 + 로컬 산출물 **(가) 기준** |
+| `CLAUDE.md` | `@docs/governance.md` import + 개인 메모로 축소, **`.gitignore` 추가** (`git rm --cached`) |
+| `.claude/rules/` | `prompts.md` / `vocabulary.md` / `export.md` / `eval.md` (경로 스코프) |
+| `.claude/hooks/load-handoff.sh` | MARA 와 동일. `docs/handoff/` 최신 파일 자동 로드 |
+| `.claude/settings.json` | `SessionStart` 훅 등록 |
+| `.gitattributes` | `* text=auto eol=lf` + `*.sh text eol=lf` |
+
+### 훅 스모크 테스트 결과
+
+| 케이스 | 결과 |
+|---|---|
+| 핸드오프 **없을 때** | exit 0, 출력 0바이트 (조용히 통과) |
+| 핸드오프 **2개 있을 때** | exit 0, `ls -t` 기준 **최신 1개만** 출력 |
+| `.gitattributes` 적용 | `git check-attr` → `text: set`, `eol: lf`. 인덱스·워킹트리 둘 다 `lf` |
+
+⚠️ **CRLF 실패 모드는 이 환경에서 재현되지 않았다.** 훅을 CRLF 로 바꿔 직접 실행하고
+`sh -c` 로도 실행했으나 둘 다 정상 동작했다(Git Bash 5.2.26, MSYS — 셔뱅의 `\r` 을
+관용적으로 처리한다). `.gitattributes` 는 지시대로 넣었고 적용은 확인했지만, **"CRLF 면
+훅이 조용히 안 돈다"를 이 환경에서 입증하지는 못했다.** 셔뱅을 엄격히 파싱하는 다른
+실행 경로에서만 문제가 되는 것으로 보인다.
+
+**`check-deploy-approval.sh`(PreToolUse 배포 승인 훅)는 이식하지 않았다** — 이 레포에
+terraform·aws 경로가 없다. 다만 **같은 성격의 게이트가 여기에도 있다**(API 호출 승인).
+훅으로 강제할지는 §12 참고.
+
+---
+
+## 11. 결함으로 발견해 고친 것
+
+1. **export 수집 경로가 관측 레이어를 건너뛰었다.** `check_relevance`/`extract_ontology`
+   를 직접 부르느라 `process_item` 의 observer 배선이 빠져 있었다 → **이번 실행의 게이트
+   스킵 19건과 미등록 기업 13건이 기록되지 않았다.** 고쳤고(커밋 `46e13ae`) 단위 테스트를
+   붙였지만, **이번 실행분은 복구되지 않는다**(재실행하면 비용을 또 낸다).
+   `observability/logs/` 는 현재 **비어 있다.**
+2. **arXiv `--urls` 주입이 빈 응답을 조용히 흘렸다.** 빈 응답과 "그런 논문 없음"을
+   구분하지 않아 표본이 28건이 된 채로 통과할 수 있었다. UA·백오프 재시도를 넣고
+   끝까지 비면 에러로 올리게 했다 (커밋 `18859f1`).
+
+---
+
+## 12. 결정 대기 / 0.5b 가 먼저 답해야 할 것
+
+| 항목 | 왜 지금 못 정했나 |
+|---|---|
+| **2단계 실행 승인** | 실측 기준 약 **$16** 으로 계획치 $6.4 의 2.5배다. 금액이 달라졌으므로 다시 승인받아야 한다 (§7) |
+| **MARA arXiv 코퍼스의 실체** | §6. 결과에 따라 v1.0 baseline 해석과 ADR-004 부합 여부가 둘 다 달라진다 |
+| **prompt caching 도입 여부** | 입력 토큰의 대부분이 고정 시스템 프롬프트라 가장 큰 비용 레버다. 다만 프롬프트 파일을 건드리지 않고 `cache_control` 만 붙이는 변경이라 **프롬프트 버저닝(ADR-004)과 무관**하다 — 2단계 전에 판단하면 $16 이 내려간다 |
+| **`MIN_TEXT_CHARS`** | 0자와 141자 사이에 값이 없어 v1 의 `1` 을 바꿀 실익이 없다. 2단계 분포로 재확인 (§8) |
+| **GeekNews 게이트 통과율 34%** | D-014/D-015 의 60% 가정과 다르다. 표본 1회이므로 2단계에서 다시 잰다 (§5) |
+| **API 승인을 훅으로 강제할 것인가** | MARA 의 `check-deploy-approval.sh` 와 같은 성격의 게이트가 이 레포에도 있다(실제 API 호출). 이번 세션에는 이식 범위에 없어 넣지 않았다 |
+| **`.env.example` 의 `ANTHROPIC_WORKSPACE_ID`** | 이번 실행에서는 불필요했다(일반 키). 조직 계정 키로 바뀌면 다시 본다 |
+
+---
+
+## 13. 커밋
+
+**push 하지 않았다.** `feat/export-contract-v1` 브랜치에 7개.
+
+```
+46e13ae fix(export): record gate skips and unresolved companies from the export path
+2579783 feat(export): seed duplicate cases from the MARA snapshot and report usage
+702854f docs(adr): migrate reversal-costly decisions from the README log
+18859f1 fix(export): retry empty arXiv responses when injecting URLs
+e0f7187 chore: split governance rules out of CLAUDE.md and add session hooks
+cc75597 feat(export): add contract v1 export path with URL injection
+f0c3076 docs: add INTERVIEW_NOTES item 9 on the vocabulary expansion  ← 기준점(main)
+```
+
+커밋 전 확인: `.env` 미포함 · `sk-ant-`/Vault 경로 패턴 0건 ·
+author = GitHub noreply · 실행 산출물(`data/`, `observability/logs/`, `eval/scores/`) 미포함.
+
+## 주의 (이월)
+
+- 테스트는 **가상환경으로**: `.venv/Scripts/python.exe -m pytest tests/ -q`.
+  이번 세션에 `.venv` 를 새로 만들었다(레포에 없었다).
+- **실제 Obsidian Vault 에 쓰지 않는다.** export 경로는 Vault 를 건드리지 않는다.
+- `data/extractions/` 에는 **프롬프트와 LLM 응답이 평문으로 남는다.**
+  `docs/governance.md` 의 로컬 산출물 (가) 기준을 따른다 — 필요 없어지면 수동 삭제.
+- **MARA 레포는 읽기 전용이다.** `export/conformance.py` 와 `export/mara_seed.py` 가
+  그쪽을 읽지만 쓰지 않는다.
