@@ -1,0 +1,7 @@
+# 1단계 적합성 검증(계약 §12.1)의 arXiv 중복 케이스 2건.
+#
+# 이 URL 들은 MARA 코퍼스 data/corpus/arxiv/ 에 이미 있는 문서다. 생산자 피드에는
+# 구조적으로 나타나지 않으므로(ADR-018 Amendment) 직접 주입해야 doc_id 동일화를
+# 검증할 수 있다. 첫 번째는 MARA 골든셋 GS-001 의 expected_doc_ids 이기도 하다.
+https://arxiv.org/abs/2412.05449v1
+https://arxiv.org/abs/2605.21404v1

@@ -1,0 +1,90 @@
+# export/ — 출력 계약 v1
+
+MARA(`multiagent-research-lab`)가 읽는 JSONL 스냅샷을 만든다. 계약 전문과 결정
+근거는 **MARA 레포**에 있다.
+
+- 계약: `docs/contracts/ai-news-ontology-export-v1.md` (`contract_version = 1.0`)
+- 결정: `docs/adr/ADR-018-ai-news-ontology-output-contract.md` (Amendment 포함)
+
+**두 레포는 코드를 공유하지 않는다.** 공유하는 것은 파일 형식 하나뿐이다. 이
+패키지는 계약 문서를 런타임에 읽지 않고, 필요한 규칙을 `contract.py` / `doc_id.py`에
+**복사해 고정**한다. 참조였다면 남의 레포의 상수 변경이 우리 출력을 조용히 바꾼다.
+
+## 모듈
+
+| 파일 | 역할 |
+|---|---|
+| `doc_id.py` | URL 정규화 + `doc_id` 생성 (§4). **계약에서 가장 되돌리기 비싼 부분** |
+| `contract.py` | 계약 상수·통제어휘 스냅샷·색인 규칙 (§5, §6) |
+| `store.py` | 추출 결과 원본 보존소 (§12.3) |
+| `record.py` | 보존된 추출 1건 → 레코드 1줄 (§3). **LLM 을 부르지 않는다** |
+| `exporter.py` | JSONL + manifest 쓰기 (§2, §11.3) |
+| `urls.py` | `--urls` 주입 — arXiv 전용 (§12.1) |
+| `runner.py` | CLI: `plan` / `collect` / `export` |
+| `conformance.py` | 1단계 자체검사 13항목 (§12.2) |
+
+## 실행
+
+```bash
+# 1. 표본 구성만 확인한다 (API 호출 없음)
+python -m export.runner plan --take "GeekNews=10" --urls-file export/stage1-urls.txt
+
+# 2. 게이트 + 추출. 결과는 받는 즉시 data/extractions/ 에 보존된다 (API 호출)
+python -m export.runner collect --take "GeekNews=10" --urls-file export/stage1-urls.txt \
+    --max-extractions 30
+
+# 3. 보존된 결과만으로 JSONL + manifest 생성 (API 호출 없음)
+python -m export.runner export
+
+# 4. 자체검사 (MARA 레포는 읽기만 한다)
+python -m export.conformance --export-id ontology-YYYYmmdd-HHMMSS \
+    --mara-root ../multiagent-research-lab \
+    --injected arXiv:2412.05449v1 arXiv:2605.21404v1
+```
+
+`collect` 와 `export` 를 **한 명령으로 합치지 않는다.** 합치면 "형식이 틀려서 다시
+돌린다"가 "추출을 다시 돌린다"와 같은 동작이 되고, 계약 §12.3 이 막으려던 구조가
+되살아난다.
+
+## `--urls` 는 편의 기능이 아니다
+
+생산자는 arXiv **최근 피드**를, MARA 는 **주제 질의 결과**를 수집한다. 시점 기준과
+주제 기준은 구조적으로 겹치지 않아 **자연 중복이 발생하지 않는다**(ADR-018
+Amendment). 그래서 `doc_id` 동일화 규칙은 피드만 돌려서는 **영원히 미검증 상태로
+"통과한 것처럼"** 보인다. 중복 케이스를 만들 수 있는 유일한 경로가 URL 직접 주입이다.
+
+**arXiv 이외의 URL 은 거부한다.** 임의의 기사 페이지를 직접 fetch 하는 것은 열린
+항목 D-013 이고, 실행되면 피드 발췌가 아니라 기사 전문이 반입된다. 계약 형식은
+4,000자 상한으로 그 변화를 흡수하지만(§6.1) **"전문을 반입해도 되는가"는 저작권·
+반입 범위 판단이라 MARA ADR-004 재검토 사안으로 남아 있다**(계약 §10).
+`--urls` 를 만들면서 그 판단을 조용히 통과시키지 않는다.
+
+## ⚠️ `conformance.py` 의 한계 — 이 통과는 MARA 로더 통과의 근거가 아니다
+
+계약 §7 의 import 검증은 **MARA 가 강제하는 것**이고, `conformance.py` 는 그 규칙을
+**생산자 쪽에서 재구현한 것**이다. 따라서:
+
+- **여기를 통과했다는 사실은 MARA 로더도 통과한다는 근거가 되지 않는다.** 같은
+  명세를 두 구현이 다르게 읽는 지점이 있어도 이 검사기는 그것을 볼 수 없다 —
+  자기가 이해한 명세와 자기가 만든 출력을 대조하기 때문이다.
+- 이 검사기가 실제로 잡는 것은 **생산자 출력이 계약 문서와 어긋나는 경우**다.
+  그것만으로도 30건 비용을 두 번 내지 않게 하는 값은 한다.
+- **계약 §12.2 의 최종 판정은 0.5b 에서 MARA 로더로 다시 내린다.** 1단계 판정표는
+  그때까지 잠정이다.
+- 13번(한국어 레코드 색인)은 실제 Chroma 적재와 `lang="ko"` 조회가 필요해
+  생산자 쪽에서 판정할 수 없다. `PENDING` 으로 남긴다.
+
+MARA 레포는 **읽기만 한다.** 코퍼스 스냅샷(`data/corpus/`)과 골든셋
+(`docs/eval/golden-set.json`)을 열어 병합 결과를 계산하지만 한 바이트도 쓰지 않는다.
+
+## 산출물 취급
+
+`data/extractions/` 에는 **프롬프트와 LLM 응답 본문이 평문으로 남는다.** 투입
+데이터가 공개 자료뿐이라는 전제(MARA ADR-004) 하에서 `docs/governance.md` 의
+**로컬 산출물 (가) 기준**을 따른다 — 보존기간 정해진 일수 없음, 별도 접근통제 없음,
+필요 없어지면 수동 삭제. `data/` 는 `.gitignore` 대상이지만 **커밋되지 않는 것과
+디스크에 없는 것은 다르다.**
+
+`data/corpus/` 의 JSONL·manifest 는 MARA 쪽에서 커밋되는 스냅샷이다(계약 §2).
+이 레포에서는 커밋하지 않고, 0.5b 에서 MARA 의 `data/corpus/` 로 옮겨 그쪽에서
+커밋한다.
