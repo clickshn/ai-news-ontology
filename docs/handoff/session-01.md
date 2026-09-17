@@ -471,19 +471,27 @@ terraform·aws 경로가 없다. 다만 **같은 성격의 게이트가 여기�
 
 ## 13. 커밋
 
-**push 하지 않았다.** `feat/export-contract-v1` 브랜치에 7개.
+`feat/export-contract-v1` 브랜치에 **9개** (이 문서를 고친 커밋 2개 포함).
+**push 는 사용자가 직접 확인 후 진행한다** (`docs/governance.md`).
 
 ```
+(이 문서를 갱신한 커밋)  docs(handoff): make the arXiv corpus check a gate on entering session 1
+10de980 docs(handoff): record the stage-1 contract run for session 0.5b
 46e13ae fix(export): record gate skips and unresolved companies from the export path
 2579783 feat(export): seed duplicate cases from the MARA snapshot and report usage
 702854f docs(adr): migrate reversal-costly decisions from the README log
 18859f1 fix(export): retry empty arXiv responses when injecting URLs
-e0f7187 chore: split governance rules out of CLAUDE.md and add session hooks
+e0f7187 chore: split governance rules out of CLAUDE.md and add session hooks   ← ⚠️ CLAUDE.md 를 추적에서 제거
 cc75597 feat(export): add contract v1 export path with URL injection
-f0c3076 docs: add INTERVIEW_NOTES item 9 on the vocabulary expansion  ← 기준점(main)
+f0c3076 docs: add INTERVIEW_NOTES item 9 on the vocabulary expansion           ← 기준점(main)
 ```
 
-커밋 전 확인: `.env` 미포함 · `sk-ant-`/Vault 경로 패턴 0건 ·
+⚠️ **`e0f7187` 은 `CLAUDE.md` 를 git 추적에서 뺀다** (`git rm --cached` + `.gitignore`).
+파일은 디스크에 그대로 있고 규칙은 `docs/governance.md` 로 옮겼지만, **공개 레포에서
+파일이 사라지는 변경**이므로 push 전에 의도한 것인지 확인한다. 되돌리려면
+`.gitignore` 의 `CLAUDE.md` 줄을 지우고 다시 `git add` 하면 된다.
+
+커밋 전 확인: `.env` 미포함 · `sk-ant-`/Vault 경로·개인 절대경로 패턴 0건 ·
 author = GitHub noreply · 실행 산출물(`data/`, `observability/logs/`, `eval/scores/`) 미포함.
 
 ## 주의 (이월)
