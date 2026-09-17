@@ -31,6 +31,7 @@ from collectors.rss import collect as collect_feeds
 from collectors.rss import load_config
 from export.doc_id import doc_id_for
 from export.exporter import DEFAULT_OUT_DIR, KST, build_records, write_export
+from export.mara_seed import collect_seed_docs
 from export.store import DEFAULT_STORE_DIR, STORE_SCHEMA, ExtractionStore
 from export.urls import collect_urls
 from extraction.extractor import (
@@ -104,13 +105,27 @@ def build_plan(
     take: dict[str, int],
     urls: Sequence[str],
     pool_factor: int = DEFAULT_POOL_FACTOR,
+    seed_from_mara: str | None = None,
+    seed_doc_ids: Sequence[str] = (),
 ) -> tuple[list[Selection], dict[str, list[RawItem]]]:
     """표본 후보를 모은다. **API 는 호출하지 않는다.**
 
+    주입 경로가 둘인 이유는 원문 출처가 다르기 때문이다. `--urls` 는 arXiv API 에서
+    받아오고, `--seed-from-mara` 는 MARA 스냅샷에서 읽는다(1단계 검증 전용,
+    `export/mara_seed.py` 참고). 둘을 한 옵션으로 합치면 레코드의 원문이 어디서
+    왔는지가 명령줄에서 사라진다.
+
     Returns:
-        (URL 주입분, 소스명별 피드 후보 풀)
+        (주입분, 소스명별 피드 후보 풀)
     """
     injected = [Selection(item=item, origin="urls") for item in collect_urls(urls)]
+    if seed_doc_ids:
+        if not seed_from_mara:
+            raise ValueError("--seed-doc-id 를 쓰려면 --seed-from-mara 경로가 필요합니다")
+        injected += [
+            Selection(item=item, origin="mara-seed")
+            for item in collect_seed_docs(seed_from_mara, seed_doc_ids)
+        ]
     pools = {name: _pool(config, name, wanted, pool_factor) for name, wanted in take.items()}
     return injected, pools
 
@@ -143,13 +158,22 @@ def run_collect(
     extraction_prompt_name: str = DEFAULT_PROMPT,
     gate_prompt_name: str = GATE_PROMPT,
     skip_stored: bool = True,
+    seed_from_mara: str | None = None,
+    seed_doc_ids: Sequence[str] = (),
 ) -> list[str]:
     """게이트 -> 추출 -> 보존. 이미 보존된 doc_id 는 기본적으로 건너뛴다.
 
     보존된 것을 건너뛰는 이유는 재실행 비용이다. 같은 30건을 다시 돌리면
     같은 돈을 또 낸다 (계약 §12.3).
     """
-    injected, pools = build_plan(config, take=take, urls=urls, pool_factor=pool_factor)
+    injected, pools = build_plan(
+        config,
+        take=take,
+        urls=urls,
+        pool_factor=pool_factor,
+        seed_from_mara=seed_from_mara,
+        seed_doc_ids=seed_doc_ids,
+    )
 
     gate_prompt = load_prompt(gate_prompt_name)
     extraction_prompt = load_prompt(extraction_prompt_name)
@@ -246,6 +270,17 @@ def _add_sampling(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--take", action="append", default=[], help="소스명=건수")
     parser.add_argument("--urls", nargs="*", default=[], help="직접 주입할 URL (arXiv만)")
     parser.add_argument("--urls-file", default=None, help="URL 목록 파일")
+    parser.add_argument(
+        "--seed-from-mara",
+        default=None,
+        help="MARA 레포 경로 (읽기 전용). 1단계 검증 전용 주입 경로",
+    )
+    parser.add_argument(
+        "--seed-doc-id",
+        nargs="*",
+        default=[],
+        help="MARA 스냅샷에서 가져올 doc_id (예: arXiv:2412.05449v1)",
+    )
     parser.add_argument("--pool-factor", type=int, default=DEFAULT_POOL_FACTOR)
 
 
@@ -284,10 +319,15 @@ def main(argv: list[str] | None = None) -> int:
             take=parse_take(args.take),
             urls=read_urls(args.urls, args.urls_file),
             pool_factor=args.pool_factor,
+            seed_from_mara=args.seed_from_mara,
+            seed_doc_ids=args.seed_doc_id,
         )
-        print(f"URL 주입 {len(injected)}건")
+        print(f"주입 {len(injected)}건")
         for selection in injected:
-            print(f"  {doc_id_for(str(selection.item.url))}  {selection.item.title[:60]}")
+            print(
+                f"  [{selection.origin}] {doc_id_for(str(selection.item.url))}  "
+                f"{selection.item.title[:55]} ({len(selection.item.body)}자)"
+            )
         for name, pool in pools.items():
             print(f"{name}: 후보 {len(pool)}건")
         return 0
@@ -302,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             pool_factor=args.pool_factor,
             extraction_prompt_name=args.prompt,
             gate_prompt_name=args.gate_prompt,
+            seed_from_mara=args.seed_from_mara,
+            seed_doc_ids=args.seed_doc_id,
         )
         print(f"보존 {len(stored)}건")
         return 0 if stored else 1

@@ -236,7 +236,19 @@ def check_04_text_origin(bundle: Bundle) -> Check:
     )
 
 
-def check_05_arxiv_merge(bundle: Bundle, snapshot: dict[str, dict[str, Any]], injected: list[str]) -> Check:
+def check_05_arxiv_merge(
+    bundle: Bundle,
+    snapshot: dict[str, dict[str, Any]],
+    injected: list[str],
+    seeded: list[str] | None = None,
+) -> Check:
+    """§12.2-5.
+
+    `seeded` 는 원문을 MARA 스냅샷에서 읽어 만든 doc_id 다 (`export/mara_seed.py`).
+    그 레코드에 대해서는 "병합이 기존 text 를 유지한다"가 **자명하게 통과**한다 —
+    주입 레코드의 text 가 애초에 그 스냅샷에서 온 값이기 때문이다. 판정 옆에
+    이 한계를 적는다.
+    """
     base_arxiv = [d for d in snapshot if d.startswith("arXiv:")]
     export_arxiv = [r["doc_id"] for r in bundle.records if r["source"] == "arxiv"]
     new_arxiv = [d for d in export_arxiv if d not in snapshot]
@@ -255,16 +267,17 @@ def check_05_arxiv_merge(bundle: Bundle, snapshot: dict[str, dict[str, Any]], in
     if len(merged_arxiv) != expected:
         problems.append(f"병합 후 arXiv {len(merged_arxiv)}건 (기대 {expected})")
 
-    return Check(
-        5,
-        "arXiv 중복 병합",
-        FAIL if problems else PASS,
-        "; ".join(problems)
-        or (
-            f"기존 {len(base_arxiv)} + 신규 {len(new_arxiv)} = {len(merged_arxiv)}건. "
-            f"주입 {len(injected)}건이 새 doc_id 를 만들지 않고 병합됨(text 유지·url 갱신)"
-        ),
+    detail = (
+        f"기존 {len(base_arxiv)} + 신규 {len(new_arxiv)} = {len(merged_arxiv)}건. "
+        f"주입 {len(injected)}건이 새 doc_id 를 만들지 않고 병합됨(text 유지·url 갱신)"
     )
+    if seeded:
+        detail += (
+            f" — ⚠️ 한계: {', '.join(seeded)} 의 원문을 MARA 스냅샷에서 읽어 왔으므로"
+            " \"병합 시 기존 text 유지\"는 자명하게 통과한다."
+            " 실질적으로 검증된 것은 URL->doc_id 동일화와 새 doc_id 미생성이다"
+        )
+    return Check(5, "arXiv 중복 병합", FAIL if problems else PASS, "; ".join(problems) or detail)
 
 
 def check_06_golden_set(bundle: Bundle, snapshot: dict[str, dict[str, Any]], pairs: list[tuple[str, str]]) -> Check:
@@ -407,6 +420,7 @@ def run_checks(
     injected: list[str],
     expected_total: int,
     config_version: object,
+    seeded: list[str] | None = None,
 ) -> list[Check]:
     snapshot = mara_corpus_doc_ids(mara_root)
     pairs = mara_expected_doc_ids(mara_root)
@@ -415,7 +429,7 @@ def run_checks(
         check_02_provenance(bundle),
         check_03_prompt_sha(bundle),
         check_04_text_origin(bundle),
-        check_05_arxiv_merge(bundle, snapshot, injected),
+        check_05_arxiv_merge(bundle, snapshot, injected, seeded),
         check_06_golden_set(bundle, snapshot, pairs),
         check_07_determinism(bundle, store, config_version),
         check_08_text_limits(bundle),
@@ -445,7 +459,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", default=str(Path("data") / "corpus"))
     parser.add_argument("--store-dir", default=str(DEFAULT_STORE_DIR))
     parser.add_argument("--mara-root", required=True, help="multiagent-research-lab 레포 경로 (읽기 전용)")
-    parser.add_argument("--injected", nargs="*", default=[], help="--urls 로 주입한 doc_id")
+    parser.add_argument("--injected", nargs="*", default=[], help="주입한 doc_id")
+    parser.add_argument(
+        "--seeded",
+        nargs="*",
+        default=[],
+        help="원문을 MARA 스냅샷에서 읽어 만든 doc_id (판정에 한계를 함께 적는다)",
+    )
     parser.add_argument("--expected-total", type=int, default=30)
     parser.add_argument("--config-version", default=1)
     args = parser.parse_args(argv)
@@ -458,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
         injected=list(args.injected),
         expected_total=args.expected_total,
         config_version=args.config_version,
+        seeded=list(args.seeded),
     )
     print(format_report(checks))
     return 1 if any(c.status == FAIL for c in checks) else 0
