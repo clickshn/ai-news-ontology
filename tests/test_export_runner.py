@@ -133,9 +133,32 @@ class TestUrlInjection:
             collect_urls(["https://news.hada.io/topic?id=1"])
 
     def test_missing_paper_is_an_error_not_a_silent_drop(self, monkeypatch):
-        monkeypatch.setattr("export.urls.feedparser.parse", lambda url: type("F", (), {"entries": []})())
+        """빈 응답을 조용히 흘리지 않는다 — 표본이 줄어든 채로 비용을 낸다."""
+        monkeypatch.setattr("export.urls.ARXIV_RETRY_DELAYS_S", ())
+        monkeypatch.setattr(
+            "export.urls.feedparser.parse", lambda url, **kw: type("F", (), {"entries": []})()
+        )
         with pytest.raises(UnsupportedUrlError, match="돌려주지 않았습니다"):
             collect_urls(["https://arxiv.org/abs/2412.05449v1"])
+
+    def test_empty_response_is_retried_before_giving_up(self, monkeypatch):
+        """arXiv 스로틀링은 이 파이프라인의 상수 조건이다 (MARA session-03~08)."""
+        calls = {"n": 0}
+
+        def flaky(url, **kw):
+            calls["n"] += 1
+            entries = (
+                [{"link": "http://arxiv.org/abs/2412.05449v1", "title": "A", "summary": "초록"}]
+                if calls["n"] > 1
+                else []
+            )
+            return type("F", (), {"entries": entries})()
+
+        monkeypatch.setattr("export.urls.ARXIV_RETRY_DELAYS_S", (0.0,))
+        monkeypatch.setattr("export.urls.feedparser.parse", flaky)
+        items = collect_urls(["https://arxiv.org/abs/2412.05449v1"])
+        assert calls["n"] == 2
+        assert items[0].title == "A"
 
     def test_returns_items_in_input_order(self, monkeypatch):
         entries = [
@@ -143,7 +166,7 @@ class TestUrlInjection:
             {"link": "http://arxiv.org/abs/2412.05449v1", "title": "A", "summary": "초록 A"},
         ]
         monkeypatch.setattr(
-            "export.urls.feedparser.parse", lambda url: type("F", (), {"entries": entries})()
+            "export.urls.feedparser.parse", lambda url, **kw: type("F", (), {"entries": entries})()
         )
         items = collect_urls(
             ["https://arxiv.org/abs/2412.05449v1", "https://arxiv.org/abs/2605.21404v1"]

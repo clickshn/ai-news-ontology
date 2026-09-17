@@ -20,6 +20,8 @@ D-013 이고, 실행되면 피드 발췌가 아니라 기사 전문이 반입된
 
 from __future__ import annotations
 
+import sys
+import time
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 
@@ -30,6 +32,12 @@ from collectors.rss import BODY_MAX_CHARS, strip_html
 from export.doc_id import arxiv_paper_id, is_arxiv
 
 ARXIV_API = "http://export.arxiv.org/api/query"
+
+# arXiv 는 요청이 잦으면 본문 없는 응답(301/406)으로 막는다. MARA 가 같은 IP 에서
+# 이 제한 때문에 session-03 이후 코퍼스가 16건에 멈춰 있다 — **재시도를 공격적으로
+# 두면 그쪽 수집까지 같이 막는다.** 간격을 넉넉히 잡고 횟수를 적게 둔다.
+ARXIV_USER_AGENT = "ai-news-ontology/0.1 (contract export; https://github.com/clickshn)"
+ARXIV_RETRY_DELAYS_S = (5.0, 20.0, 60.0)
 
 # 주입 항목은 config.yaml 의 피드 소스가 아니라 id 조회로 들어온다. 피드 소스와
 # 같은 이름을 붙이면 manifest 의 by_source_name 에서 둘이 섞여, 어느 것이
@@ -42,6 +50,28 @@ class UnsupportedUrlError(ValueError):
     """본문을 가져올 경로가 없는 URL."""
 
 
+def _parse_with_retry(url: str, *, delays: Iterable[float] | None = None):
+    """arXiv 응답이 빌 때만 재시도한다.
+
+    빈 응답과 "정말 그 논문이 없음"을 여기서 구분하지 않는다 — 둘 다 재시도해
+    보고, 끝까지 비면 호출부가 **에러로** 다룬다. 조용히 빈 목록을 돌려주면
+    표본 30건이 28건이 된 채로 진행되고, 그때는 이미 비용을 낸 뒤다.
+    """
+    attempts = [0.0, *(ARXIV_RETRY_DELAYS_S if delays is None else delays)]
+    feed = None
+    for i, delay in enumerate(attempts):
+        if delay:
+            print(
+                f"[arxiv] 빈 응답 — {delay:.0f}초 뒤 재시도 ({i}/{len(attempts) - 1})",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        feed = feedparser.parse(url, agent=ARXIV_USER_AGENT)
+        if feed.entries:
+            return feed
+    return feed
+
+
 def fetch_arxiv_ids(paper_ids: Iterable[str], *, collected_at: date | None = None) -> list[RawItem]:
     """arXiv id_list 조회 1회로 여러 논문을 받는다.
 
@@ -52,7 +82,7 @@ def fetch_arxiv_ids(paper_ids: Iterable[str], *, collected_at: date | None = Non
     if not ids:
         return []
 
-    feed = feedparser.parse(f"{ARXIV_API}?id_list={','.join(ids)}&max_results={len(ids)}")
+    feed = _parse_with_retry(f"{ARXIV_API}?id_list={','.join(ids)}&max_results={len(ids)}")
     today = collected_at or date.today()
 
     items: list[RawItem] = []
