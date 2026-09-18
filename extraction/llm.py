@@ -349,3 +349,64 @@ class AnthropicClient:
             attempts=2,
             last_error=last_error,
         )
+
+
+# ---------------------------------------------------------------------------
+# 프로바이더 선택 (ADR-018)
+# ---------------------------------------------------------------------------
+#: `config.yaml: llm.provider` 가 고를 수 있는 값.
+PROVIDERS = ("vllm", "anthropic")
+
+#: 내부 vLLM 에서 의미가 없는 벤더 전용 파라미터. 조용히 버리지 않고 **이름을
+#: 남긴다** — 파라미터가 사라진 것과 무시된 것은 다르고, 대조 실행에서 "무엇이
+#: 달랐나"를 적으려면 그 목록이 필요하다 (사전 등록 §2.1).
+VENDOR_ONLY_PARAMS = ("effort", "thinking")
+
+
+def client_from_config(
+    config: dict[str, Any],
+    stage: str = "extraction",
+    **overrides: Any,
+) -> LLMClient:
+    """`llm.provider` 를 보고 단계용 클라이언트를 만든다.
+
+    호출부(extractor / export.runner / eval.runner)가 구현체 이름을 알지 않게
+    하는 것이 목적이다. **이전 범위가 "단계 3개"가 아니라 "생성 지점 5개"였던
+    이유가 이것이다** — 생성이 호출부마다 흩어져 있으면 프로바이더를 바꿀 때
+    한 줄이 조용히 남는다 (ADR-017 Evidence, session-02 §3.1).
+
+    Args:
+        stage: `relevance_gate` | `extraction` | `eval_judge`.
+    """
+    llm = (config or {}).get("llm") or {}
+    provider = (llm.get("provider") or "vllm").strip().lower()
+    if provider not in PROVIDERS:
+        raise LLMError(
+            f"알 수 없는 llm.provider: {provider!r}. 가능한 값: {', '.join(PROVIDERS)}"
+        )
+
+    if provider == "anthropic":
+        return AnthropicClient.from_config(config, stage=stage, **overrides)
+
+    from extraction.vllm import VLLMClient
+
+    section = llm.get(stage)
+    if not isinstance(section, dict):
+        section = llm
+    vllm_cfg = llm.get("vllm") or {}
+
+    kwargs: dict[str, Any] = {
+        "model": section.get("model"),
+        "max_tokens": section.get("max_tokens", 8000),
+        # 벤더 쪽 추출 설정은 temperature 를 보내지 못했다 — Opus 5 가 거부한다
+        # (D-033). vLLM 은 받으므로 **게이트와 같은 이유로**(D-032: 같은 입력이
+        # 실행마다 다르게 판정되면 안 된다) 0 을 기본으로 둔다. 이것은 모델 교체와
+        # 함께 바뀌는 파라미터 차이이고, 대조 결과에 그대로 적는다.
+        "temperature": section.get("temperature", 0.0),
+        "system_as_user": bool(vllm_cfg.get("system_as_user", False)),
+        "stage": stage,
+    }
+    if vllm_cfg.get("base_url"):
+        kwargs["base_url"] = vllm_cfg["base_url"]
+    kwargs.update(overrides)
+    return VLLMClient(**kwargs)
