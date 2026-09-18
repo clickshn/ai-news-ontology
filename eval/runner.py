@@ -303,7 +303,15 @@ def judge_client_from_config(config: Mapping[str, Any], **overrides: Any):
     llm_cfg = (config or {}).get("llm") or {}
     model = eval_cfg.get("judge_model") or llm_cfg.get("judge_model") or "claude-opus-5"
 
-    kwargs: dict[str, Any] = {"model": model, "max_tokens": 4000, "effort": "high"}
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 4000,
+        "effort": "high",
+        # judge 도 벤더 호출 지점이다 — 채점하는 행위 자체가 같은 위반이 된다.
+        # 단계 이름을 넘겨야 승인 없이 돌렸을 때 이 지점이 목록에 이름으로 남는다
+        # (ADR-017).
+        "stage": "eval_judge",
+    }
     kwargs.update(overrides)
     return AnthropicClient(**kwargs)
 

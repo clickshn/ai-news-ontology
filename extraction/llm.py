@@ -21,6 +21,12 @@ import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
+from extraction.egress import (
+    assert_internal_endpoint,
+    assert_vendor_call_allowed,
+    endpoint_from_env,
+)
+
 T = TypeVar("T", bound=BaseModel)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -147,7 +153,21 @@ class AnthropicClient:
         max_retries: int = 2,
         timeout: float = 120.0,
         client: anthropic.Anthropic | None = None,
+        stage: str = "unspecified",
     ) -> None:
+        # --- 외부 벤더 호출 게이트 (ADR-017) ---------------------------------
+        # **객체 생성 시점**에 막는다. 호출 시점이 아니라 여기인 이유는, 클라이언트가
+        # 만들어진 뒤에는 어디서든 부를 수 있어 차단 지점이 흩어지기 때문이다.
+        # Protocol 구현체가 태어나는 자리가 이 레포에서 벤더로 나가는 유일한 문이다.
+        #
+        # 목 클라이언트 주입은 통과시킨다 — 네트워크로 나가지 않는다. 다만 **진짜
+        # SDK 객체를 주입하는 경로는 통과시키지 않는다.** 그 경로까지 열어 두면
+        # `client=` 한 글자가 게이트 전체의 우회로가 된다.
+        self.stage = stage
+        if client is None or isinstance(client, anthropic.Anthropic):
+            assert_vendor_call_allowed(stage=stage, model=model)
+            assert_internal_endpoint(endpoint_from_env(), field="LLM 엔드포인트 override")
+
         self.model = model
         self.max_tokens = max_tokens
         # effort/thinking/temperature 는 모델마다 지원 범위가 다르다. 지원하지 않는
@@ -215,6 +235,9 @@ class AnthropicClient:
             # temperature 는 기본이 None(= 보내지 않음)이다. 지원하는 모델에만
             # 설정에서 명시적으로 켠다.
             "temperature": section.get("temperature"),
+            # 어느 호출 지점인지를 그대로 넘긴다. 승인 없이 파이프라인을 돌렸을 때
+            # 예외 메시지가 단계 이름을 말해 주는 근거다 (ADR-017).
+            "stage": stage,
         }
         kwargs.update(overrides)
         return cls(**kwargs)
