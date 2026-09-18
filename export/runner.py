@@ -43,7 +43,7 @@ from extraction.extractor import (
     load_prompt,
     record_unknown_companies,
 )
-from extraction.llm import AnthropicClient, SchemaMismatchError
+from extraction.llm import SchemaMismatchError, client_from_config
 from observability.events import (
     NullObserver,
     PipelineObserver,
@@ -192,8 +192,8 @@ def run_collect(
     gate_sha = prompt_sha256(gate_prompt_name)
     extraction_sha = prompt_sha256(extraction_prompt_name)
 
-    gate_client = AnthropicClient.from_config(config, stage="relevance_gate")
-    extraction_client = AnthropicClient.from_config(config, stage="extraction")
+    gate_client = client_from_config(config, stage="relevance_gate")
+    extraction_client = client_from_config(config, stage="extraction")
 
     observer = observer or NullObserver()
     seen: set[str] = set(store.doc_ids()) if skip_stored else set()

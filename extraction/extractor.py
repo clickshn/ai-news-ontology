@@ -26,7 +26,13 @@ from typing import Any
 
 from collectors.base import RawItem
 from collectors.rss import collect, load_config
-from extraction.llm import AnthropicClient, LLMClient, SchemaMismatchError, StructuredResult, Usage
+from extraction.llm import (
+    LLMClient,
+    SchemaMismatchError,
+    StructuredResult,
+    Usage,
+    client_from_config,
+)
 from extraction.schema import NewsOntology, ReleaseType, RelevanceGate, TechDomain
 from observability.events import (
     InMemoryObserver,
@@ -315,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     # 관측이 꺼져 있으면 두 번째가 NullObserver 라 CLI 동작은 그대로다 (D-008).
     memory = InMemoryObserver()
     observer = MultiObserver(memory, observer_from_config(config))
-    gate_client = AnthropicClient.from_config(config, stage="relevance_gate")
+    gate_client = client_from_config(config, stage="relevance_gate")
 
     # --gate-only 는 정밀 추출 클라이언트를 아예 만들지 않는다.
     if args.gate_only:
@@ -330,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    extraction_client = AnthropicClient.from_config(config, stage="extraction")
+    extraction_client = client_from_config(config, stage="extraction")
     try:
         result = process_item(
             item,

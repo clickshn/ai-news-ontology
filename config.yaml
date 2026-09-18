@@ -81,13 +81,28 @@ sources:
 # 있는가"만 판정하므로 저비용 모델로 충분하고, 뒷단(extraction)은 통제어휘 선택과
 # 영향도 판정이 걸려 있어 고성능 모델을 쓴다. (결정 로그 D-015)
 llm:
-  provider: "anthropic"          # 추후 확장 지점. extraction/llm.py 의 Protocol 참고
+  # "vllm" = 내부 KT Cloud AI Nexus 엔드포인트(.env 의 VLLM_BASE) / "anthropic" = 외부 벤더.
+  #
+  # ⚠️ **"anthropic" 으로 되돌리는 것은 설정 변경이 아니라 전제 변경이다.** 이 레포가
+  #    만드는 코퍼스의 소비자(MARA)는 외부 LLM 벤더 비의존이 전제이고, 그 전제가
+  #    깨졌을 때 실제로 벤더를 부른 코드가 여기였다 (ADR-017, MARA ADR-021).
+  #    되돌리면 extraction/egress.py 의 기본 차단이 다시 걸리고, 승인 게이트 6항목
+  #    1번의 답이 "아니오"가 된다. (ADR-018, 결정 로그 D-063)
+  provider: "vllm"
+
+  vllm:
+    # base_url 은 여기 적지 않는다. **엔드포인트 URL 자체가 자격증명이다**
+    # (MARA ADR-010) — .env 의 VLLM_BASE 로만 주입하고 레포에는 남기지 않는다.
+    # system 역할을 별도 메시지로 보낼 수 있는지는 채팅 템플릿에 달렸다.
+    # gemma-4-31B-it 실측 결과는 ADR-018 Evidence 참고.
+    system_as_user: false
 
   relevance_gate:
-    model: "claude-haiku-4-5-20251001"
+    model: "gemma-4-31B-it"      # 이전: claude-haiku-4-5-20251001 (D-015)
     max_tokens: 1000
-    # Haiku 4.5 는 output_config.effort 를 지원하지 않는다(400). null 로 두면
-    # AnthropicClient 가 output_config 를 아예 보내지 않는다.
+    # effort / thinking 은 **벤더 전용 파라미터**다. provider: vllm 에서는
+    # 전달되지 않는다 (extraction/llm.py VENDOR_ONLY_PARAMS). 벤더로 되돌릴 때를
+    # 위해 값은 남겨 둔다 — Haiku 4.5 는 output_config.effort 를 거부한다(400).
     effort: null
     thinking: "disabled"         # 이분 판정이라 사고 확장이 필요 없다
     # 게이트는 재현 가능해야 한다. 미설정 시 API 기본값(1.0)이 적용돼 같은 기사가
@@ -95,13 +110,20 @@ llm:
     temperature: 0
 
   extraction:
-    model: "claude-opus-5"
+    model: "gemma-4-31B-it"      # 이전: claude-opus-5
     max_tokens: 8000
-    thinking: "adaptive"         # 구조화 추출은 판단이 섞이므로 기본 on
-    effort: "high"
-    # [주의] Opus 5 는 temperature 를 거부한다(400 "deprecated for this model").
-    # 값을 넣지 말 것. 출력 다양성은 effort 로 조절한다.
-    temperature: null
+    thinking: "adaptive"         # 벤더 전용. vllm 에서는 무시된다
+    effort: "high"               # 벤더 전용. gemma 에는 대응 파라미터가 없다
+    # [주의] Opus 5 는 temperature 를 거부했다(400 "deprecated for this model").
+    # vLLM 은 받으므로 게이트와 같은 이유로 0 을 쓴다 (D-032). **이것은 모델
+    # 교체와 함께 바뀐 파라미터 차이이고, 대조 결과에 그대로 적는다** (D-063).
+    temperature: 0
+
+  eval_judge:
+    # 모델명의 정본은 아래 `eval.judge_model` 이다. 여기에는 모델 외 설정만 둔다.
+    max_tokens: 4000
+    effort: "high"               # 벤더 전용
+    temperature: 0
 
 # --- 3. 온톨로지 통제어휘 (schema.py Enum 의 미러) -----------------------------
 ontology:
@@ -163,7 +185,11 @@ output:
 
 # --- 6. eval -----------------------------------------------------------------
 eval:
-  judge_model: "claude-opus-5"
+  # ⚠️ judge 도 벤더 호출 지점이었다 — **채점하는 행위 자체가 같은 전제 위반**이다.
+  #    그래서 이전 범위에 포함됐다 (MARA 사전 등록 §3③, ADR-018).
+  # ⚠️ judge 와 후보가 같은 모델이 되어 **자기 선호 편향**이 생긴다. 이 점수는
+  #    참고값이고 합격 판정은 통제어휘 이탈률·structured output 실패율이 한다.
+  judge_model: "gemma-4-31B-it"  # 이전: claude-opus-5
   golden_set_path: "eval/golden_set"
   scores_path: "eval/scores"
   # 아래 임계값 미달이면 파이프라인이 경고를 남긴다 (초안값, 측정 후 재조정)

@@ -292,28 +292,36 @@ def judge_client_from_config(config: Mapping[str, Any], **overrides: Any):
     judge 모델은 `llm:` 이 아니라 `eval:` 블록에 있다 — 단계별 모델(D-015)과
     달리 이건 파이프라인이 아니라 **채점 설정**이기 때문이다.
 
-    `temperature` 는 설정하지 않는다. 현재 judge 모델(Opus 5)이 이 파라미터를
-    400 으로 거부하기 때문이고(D-033), 그래서 **게이트(D-032)처럼 판정을
-    결정적으로 만들 수단이 지금은 없다.** 같은 요약을 두 번 채점하면 점수가
-    갈릴 수 있으므로, 추이를 볼 때 1점 차이를 유의미하게 읽으면 안 된다.
+    `temperature` 는 프로바이더가 받을 때만 설정한다. 벤더 judge(Opus 5)는 이
+    파라미터를 400 으로 거부했고(D-033), 그래서 **게이트(D-032)처럼 판정을
+    결정적으로 만들 수단이 없었다.** 내부 vLLM 으로 옮기면서 그 수단이 생겼지만
+    (`llm.eval_judge.temperature`), **비결정성이 사라진다는 뜻은 아니다** —
+    D-049 의 실측은 벤더 judge 기준이고 모델이 바뀌면 다시 재야 한다.
+
+    ⚠️ **judge 와 후보가 같은 모델이 되면 자기 선호 편향이 생긴다.** gemma 출력을
+    gemma 가 채점하게 되므로 이 점수는 **참고값**이고, 판정은 통제어휘 이탈률과
+    structured output 실패율이 한다 (MARA 사전 등록 §3.3, ADR-018).
     """
-    from extraction.llm import AnthropicClient
+    from extraction.llm import client_from_config
 
-    eval_cfg = (config or {}).get("eval") or {}
-    llm_cfg = (config or {}).get("llm") or {}
-    model = eval_cfg.get("judge_model") or llm_cfg.get("judge_model") or "claude-opus-5"
+    config = dict(config or {})
+    eval_cfg = config.get("eval") or {}
+    llm_cfg = dict(config.get("llm") or {})
+    model = eval_cfg.get("judge_model") or llm_cfg.get("judge_model")
+    if not model:
+        raise EvalError("eval.judge_model 이 없습니다. config.yaml 을 확인하세요.")
 
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "max_tokens": 4000,
-        "effort": "high",
-        # judge 도 벤더 호출 지점이다 — 채점하는 행위 자체가 같은 위반이 된다.
-        # 단계 이름을 넘겨야 승인 없이 돌렸을 때 이 지점이 목록에 이름으로 남는다
-        # (ADR-017).
-        "stage": "eval_judge",
-    }
-    kwargs.update(overrides)
-    return AnthropicClient(**kwargs)
+    # judge 설정은 `eval:` 블록에 있지만 클라이언트 생성은 단계별 팩토리를 탄다.
+    # 모델을 `llm.eval_judge` 로 옮겨 적지 않고 여기서 합성하는 이유는, 설정의
+    # 정본을 둘로 만들지 않기 위해서다 — `eval.judge_model` 이 계속 정본이다.
+    section = dict(llm_cfg.get("eval_judge") or {})
+    section.setdefault("max_tokens", 4000)
+    section.setdefault("effort", "high")
+    section["model"] = model
+    llm_cfg["eval_judge"] = section
+    config["llm"] = llm_cfg
+
+    return client_from_config(config, stage="eval_judge", **overrides)
 
 
 # ---------------------------------------------------------------------------
