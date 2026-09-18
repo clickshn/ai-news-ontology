@@ -1,0 +1,77 @@
+# 외부 LLM 벤더 게이트 검사 케이스 (ADR-017).
+#
+# 형식: <기대 종료코드>|<설명>|<명령>
+#   - 앞의 두 `|` 만 구분자다. 명령 안의 `|`(파이프)는 그대로 명령에 속한다.
+#   - 명령의 `\n` 은 개행으로 풀린다 (heredoc 케이스).
+#   - `#` 로 시작하는 줄과 빈 줄은 무시한다.
+#
+# 기대 종료코드 2 = 차단, 0 = 통과.
+# **통과 케이스(오탐 대조)를 반드시 함께 둔다** — 차단 케이스만 있는 검사는
+# "전부 차단"인 고장 난 게이트도 통과시킨다.
+#
+# ⚠️ **이 파일은 MARA 케이스의 복사본이 아니다** (MARA session-11 §5.3).
+# 저쪽에는 벤더 SDK 의존이 없어 "임포트 = 위반"이었지만, 이 레포에는 `anthropic`
+# SDK 가 실제로 설치돼 있고 그것을 임포트하는 정상 코드와 테스트가 있다. 또 저쪽에서
+# 차단 대상이던 "생산자 파이프라인 실행"이 여기서는 **정상 작업**이다. 그래서 아래
+# 오탐 대조는 이 레포 기준으로 새로 짰고, 의미가 뒤집힌 항목에는 표시를 남겼다.
+
+# --- 차단되어야 하는 것 -----------------------------------------------------
+2|curl 로 벤더 엔드포인트 직접 호출|curl -s https://api.anthropic.com/v1/messages -d @req.json
+2|PowerShell Invoke-RestMethod|Invoke-RestMethod -Uri https://api.openai.com/v1/chat/completions -Method Post
+2|Azure OpenAI 배포 호출|curl https://my-resource.openai.azure.com/openai/deployments/x/chat/completions
+2|Google 생성 API 호출|curl https://generativelanguage.googleapis.com/v1beta/models/x:generateContent
+2|Bedrock 런타임 (리전이 호스트 중간)|curl https://bedrock-runtime.ap-northeast-2.amazonaws.com/model/m/invoke
+2|OpenRouter 경유|curl https://openrouter.ai/api/v1/chat/completions -d @req.json
+2|파이프로 이어붙인 벤더 호출|cat req.json | curl -s https://api.anthropic.com/v1/messages -d @-
+2|엔드포인트 환경변수를 벤더로 교체|ANTHROPIC_BASE_URL=https://api.openai.com/v1 python -m export.runner export
+2|벤더 API 키 인라인 주입|ANTHROPIC_API_KEY=EXAMPLE-NOT-REAL python -m extraction.extractor --index 0
+2|PowerShell 환경변수 형태 키 주입|$env:OPENAI_API_KEY = "EXAMPLE-NOT-REAL"
+2|python -c 로 벤더 클라이언트 생성|python -c "import anthropic; c = anthropic.Anthropic()"
+2|인라인 메시지 호출|python -c "r = c.messages.create(model='m', max_tokens=8)"
+2|인라인 구조화 출력 호출|python -c "r = c.messages.parse(output_format=M)"
+2|OpenAI 클라이언트 생성|python -c "from openai import OpenAI; c = OpenAI()"
+2|node -e 로 벤더 SDK 로드|node -e "const c = require('openai')"
+2|heredoc 안의 비의존 벤더 SDK 임포트|python - <<EOF\nimport openai\nEOF
+2|langchain 벤더 어댑터 임포트|python -c "from langchain_openai import ChatOpenAI"
+2|claude CLI 헤드리스 실행|claude -p "이 기사에서 온톨로지를 추출해줘"
+2|codex CLI 실행|codex exec "extract ontology"
+2|gemini CLI 실행|gemini --prompt "extract"
+# 자기참조 — 회피가 아니라 정상 경로다. 이 표현을 명령줄로 찾으려 하면 훅이 자신의
+# 검사 대상을 만난다. Read/Grep 도구를 쓰는 것이 정상 경로이고, 그 비용을 여기 적어 둔다.
+2|자기참조: 클라이언트 생성 표현을 명령줄로 grep 하는 것도 차단된다(의도된 비용)|grep -rn "anthropic.Anthropic(" extraction/llm.py
+
+# --- 통과해야 하는 것 (오탐 대조) — 이 레포 기준으로 새로 짰다 ---------------
+# ⇄ 표시는 MARA 에서는 판정이 반대였던 항목이다.
+0|⇄ 생산자 추출 파이프라인 실행 (여기서는 정상 작업)|python -m extraction.extractor --index 0
+0|⇄ export 계획 실행 (여기서는 정상 작업)|python -m export.runner plan --take 30
+0|⇄ eval 러너 실행 (여기서는 정상 작업)|python -m eval.runner --judge
+0|⇄ SDK 임포트는 호출이 아니다 (여기에는 실제 의존성이 있다)|python -c "import anthropic; print(anthropic.__version__)"
+0|⇄ 설치된 SDK 버전 확인|pip show anthropic
+0|SDK 설치는 호출이 아니다|pip install anthropic
+0|.env.example 에서 키 이름 읽기 (주입이 아니다)|grep -n "ANTHROPIC_API_KEY=" .env.example
+0|전체 테스트 실행|.venv/Scripts/python.exe -m pytest tests/ -q
+0|어휘 동기화 테스트|.venv/Scripts/python.exe -m pytest tests/test_vocab_sync.py -q
+0|llm.py 를 다루는 명령|grep -rn "parse_into" extraction/llm.py
+0|llm 키워드로 테스트 필터|pytest tests/test_relevance_gate.py -k llm
+0|훅 파일 읽기|cat .claude/hooks/check-external-llm.sh
+0|.claude 경로 접근|cat .claude/settings.json
+0|소비자 레포 읽기 (실행 아님)|ls /c/multiagent-research-lab/docs/adr
+0|벤더 이름이 본문에 언급될 뿐|echo "anthropic and openai are vendors"
+0|커밋|git commit -m "feat(gate): block external vendor calls by default"
+0|파이프가 들어간 평범한 명령|git status --short | head -20
+
+# --- ⚠️ 알려진 우회 — **고의로 통과시킨다** -----------------------------------
+# 훅은 명령 문자열만 본다. 아래는 그 적용 범위 밖이며, 막지 못한다는 사실을
+# 산문이 아니라 **테스트에 고정**한다 (MARA session-11 §5.2-4).
+# 이 줄들이 언젠가 exit 2 로 바뀐다면 그건 실패가 아니라 개선이다 — 그때 기대값을 바꾼다.
+#
+# ⚠️ 여기에 적힌 다섯 줄은 **MARA 에서와 달리 실제로 뚫리는 경로다.** 저쪽은 코드
+# 계층이 `VLLM_BASE` 하나만 읽는 설계였지만, 이쪽은 `anthropic` SDK 가 설치돼 있고
+# 키가 `.env` 에 있다. 스크립트 파일 하나면 게이트 밖에서 진짜 호출이 나간다.
+# 이 레포에서 그 절반을 실제로 맡는 것은 훅이 아니라 `extraction/egress.py` 의
+# 기본 차단이고, 그것도 **우리 코드를 경유할 때만** 유효하다.
+0|⚠️ 우회: 스크립트 파일 안에 벤더 호출 (명령줄에 흔적 없음)|python scripts/whatever_calls_a_vendor.py
+0|⚠️ 우회: venv 파이썬으로 같은 스크립트 실행|.venv/Scripts/python.exe scripts/whatever_calls_a_vendor.py
+0|⚠️ 우회: 셸 스크립트 경유|bash run_extract.sh
+0|⚠️ 우회: Makefile 경유|make extract
+0|⚠️ 우회: 난독화된 명령|echo aHR0cHM6Ly9hcGkuYW50aHJvcGljLmNvbQ== | base64 -d | xargs curl -s
