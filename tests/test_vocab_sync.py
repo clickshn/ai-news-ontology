@@ -107,14 +107,22 @@ def test_relevance_gate_temperature_is_zero():
     assert gate["temperature"] == 0
 
 
-def test_extraction_temperature_is_not_set():
-    """Opus 5 는 temperature 를 거부한다(400 'deprecated for this model').
+def test_extraction_temperature_is_zero_on_vllm():
+    """추출도 게이트와 같은 이유로 결정적이어야 한다 (D-032).
 
-    값이 들어가면 추출 단계가 통째로 실패한다. null 로 남아 있어야 한다.
+    **이 계약은 이전으로 뒤집혔다.** Opus 5 가 `temperature` 를 400 으로 거부해서
+    (D-033) 추출 단계만 이 수단이 없었는데, 내부 vLLM 은 받는다 (ADR-018).
+    벤더로 되돌리면 이 값이 다시 추출을 통째로 실패시키므로, 되돌리는 것은 설정
+    변경이 아니라 전제 변경이다.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-    extraction = (config.get("llm") or {}).get("extraction") or {}
-    assert extraction.get("temperature") is None
+    llm = config.get("llm") or {}
+    assert llm.get("provider") == "vllm", (
+        "provider 가 vllm 이 아닙니다. 벤더로 되돌아갔다면 extraction.temperature 를 "
+        "null 로 되돌려야 합니다 (Opus 5 는 400 으로 거부한다, D-033)."
+    )
+    extraction = llm.get("extraction") or {}
+    assert extraction.get("temperature") == 0
 
 
 def test_temperature_is_only_sent_when_configured():

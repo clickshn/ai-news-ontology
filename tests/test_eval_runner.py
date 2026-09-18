@@ -671,16 +671,29 @@ def test_broken_prediction_file_raises(tmp_path):
 # 9. judge 클라이언트 설정
 # ---------------------------------------------------------------------------
 def test_judge_client_reads_eval_judge_model():
+    """모델명의 정본은 `eval.judge_model` 이다 — `llm:` 으로 옮겨 적지 않는다."""
     client = judge_client_from_config(
-        {"eval": {"judge_model": "claude-opus-5"}}, client=object()
+        {"eval": {"judge_model": "gemma-4-31B-it"}}, transport=lambda *a, **k: {}
     )
-    assert client.model == "claude-opus-5"
+    assert client.model == "gemma-4-31B-it"
 
 
-def test_judge_client_sends_no_temperature():
-    """Opus 5 는 temperature 를 400 으로 거부한다 (D-033)."""
-    client = judge_client_from_config({"eval": {"judge_model": "claude-opus-5"}}, client=object())
-    assert "extra_body" not in client._request_kwargs()
+def test_judge_client_follows_the_provider():
+    """judge 도 `llm.provider` 를 탄다 — 여기만 벤더에 남으면 채점하는 행위 자체가
+    같은 전제 위반이 된다 (ADR-018)."""
+    from extraction.vllm import VLLMClient
+
+    client = judge_client_from_config(
+        {"eval": {"judge_model": "gemma-4-31B-it"}}, transport=lambda *a, **k: {}
+    )
+    assert isinstance(client, VLLMClient)
+
+
+def test_judge_client_requires_a_model():
+    """모델명이 없으면 조용히 기본값으로 떨어지지 않는다 — 어느 모델이 채점했는지가
+    결과에 남지 않으면 점수를 다시 읽을 수 없다."""
+    with pytest.raises(EvalError):
+        judge_client_from_config({"eval": {}})
 
 
 def test_fake_judge_satisfies_protocol():

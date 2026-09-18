@@ -240,11 +240,17 @@ def test_from_config_carries_the_stage(isolated_root):
 
 
 def test_judge_client_carries_the_eval_stage(isolated_root):
-    """judge 도 벤더 호출 지점이다 — 채점하는 행위 자체가 같은 위반이 된다."""
+    """judge 도 벤더 호출 지점이다 — 채점하는 행위 자체가 같은 위반이 된다.
+
+    ⚠️ **judge 는 이제 내부 vLLM 을 가리킨다** (ADR-018). 그래서 여기서 `provider`
+    를 명시적으로 `anthropic` 으로 되돌려 검사한다 — 되돌아갔을 때 게이트가 여전히
+    이 지점을 단계 이름과 함께 잡는지가 이 테스트의 계약이다.
+    """
     from eval.runner import judge_client_from_config
 
+    config = {"llm": {"provider": "anthropic"}, "eval": {"judge_model": "claude-opus-5"}}
     with pytest.raises(ExternalVendorCallError) as exc:
-        judge_client_from_config({"eval": {"judge_model": "claude-opus-5"}})
+        judge_client_from_config(config)
     assert "eval_judge" in str(exc.value)
 
 

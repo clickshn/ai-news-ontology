@@ -79,13 +79,13 @@ def patched(monkeypatch):
 
         monkeypatch.setattr("export.runner.collect_feeds", lambda *a, **k: list(items))
         monkeypatch.setattr("export.runner.collect_urls", lambda urls, **k: list(injected or []))
+        # 생성 지점이 `client_from_config` 하나로 모였다 (ADR-018). 프로바이더가
+        # 바뀌어도 이 패치 대상은 그대로다 — 그게 팩토리를 둔 이유다.
         monkeypatch.setattr(
-            "export.runner.AnthropicClient.from_config",
-            classmethod(
-                lambda cls, config, stage="extraction", **kw: gate
-                if stage == "relevance_gate"
-                else extraction
-            ),
+            "export.runner.client_from_config",
+            lambda config, stage="extraction", **kw: gate
+            if stage == "relevance_gate"
+            else extraction,
         )
         return gate, extraction
 
