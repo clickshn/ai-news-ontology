@@ -2,6 +2,7 @@
 paths:
   - "extraction/vllm.py"
   - "extraction/llm.py"
+  - "extraction/probe.py"
   - "eval/runner.py"
   - "export/replay.py"
   - "config.yaml"
@@ -61,6 +62,10 @@ paths:
 
 - 엔드포인트 주소·모델·서버 버전이 바뀌면 **반증 probe 를 다시 돌린다.**
 - 측정(대조 실행, eval)을 시작하기 전에 확인한다. 호출 1건이다.
+- **설계를 매번 다시 짜지 않는다.** `extraction/probe.py` 가 위 설계를 고정한다
+  (`python -m extraction.probe`). 매번 짜면 매번 틀릴 수 있고, session-03 의 1차
+  probe 가 그렇게 정반대 결론을 냈다. 호출은 **강제돼 있으면 1건, 아니면 2건**이다
+  — 검증 실패에 재시도가 붙기 때문이고, 승인 상한 2건이 여기서 나온다.
 - 스키마에 큰 `minLength`/`minItems` 를 넣으면 **절단 위험**을 같이 본다 —
   모델 능력과 무관하게 `finish_reason: "length"` 로 실패율이 오른다.
 
