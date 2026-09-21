@@ -205,6 +205,14 @@ F11(`paths:` 누락)과 같다. 여기서는 롤백 경로에 테스트가 **0�
   `provider: vllm` 경로의 요청이 바이트 단위로 같기 때문이다.
 - **Migration Cost:** Low
 
+> ⚠️ **벤더로 되돌리는 절차 자체는 한 줄이 아니다 (2026-09-21, F7).** `anthropic`
+> SDK 가 코어 의존성에서 `[project.optional-dependencies] vendor` 로 내려갔다.
+> 되돌릴 때는 **`pip install -e .[vendor]` 를 먼저** 실행하고 그 다음에
+> `config.yaml: llm.provider` 를 바꾼다. 순서가 뒤집히면 클라이언트 생성 시점에
+> `LLMError` 가 난다 (`extraction/llm.py: _load_vendor_sdk`). 이 ADR 이 정정한
+> ADR-018 의 서술("한 줄이면 되돌아간다")과 같은 종류의 낙관이라서, 여기 적는다.
+> 절차가 동작하는지는 `tests/test_rollback_path.py` 가 잰다 (D-080).
+
 ## References
 
 - **Related ADR:** ADR-013(모델별 파라미터와 게이트 `temperature: 0` — 이 결정이

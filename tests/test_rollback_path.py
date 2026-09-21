@@ -16,6 +16,9 @@ ADR-018 은 `anthropic` SDK 를 **롤백 경로로 남긴다**고 적었고, Ris
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -115,3 +118,89 @@ def test_unknown_model_keeps_everything() -> None:
     )
     assert client.dropped_params == ()
     assert client._request_kwargs()["extra_body"] == {"temperature": 0}
+
+
+# ---------------------------------------------------------------------------
+# 롤백에 필요한 것은 설정 한 줄이 아니다 (F7)
+# ---------------------------------------------------------------------------
+#: SDK 가 없는 상태를 흉내 낸다. 실제로 지웠다 깔았다 할 수 없으므로
+#: **import 를 막는 것**으로 같은 상황을 만든다.
+_BLOCK_VENDOR_SDK = """
+import sys
+from importlib.abc import MetaPathFinder
+
+
+class _Block(MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "anthropic" or fullname.startswith("anthropic."):
+            raise ModuleNotFoundError("No module named 'anthropic'", name=fullname)
+        return None
+
+
+sys.meta_path.insert(0, _Block())
+
+import extraction.llm as llm
+import extraction.vllm  # noqa: F401  기본 경로가 SDK 를 건드리지 않는지도 같이 본다
+
+# 목 주입 경로는 SDK 없이도 살아 있어야 한다 — 테스트 전체가 이 경로를 쓴다.
+client = llm.AnthropicClient(model="claude-opus-5", client=object())
+assert client.model == "claude-opus-5"
+assert "anthropic" not in sys.modules, "기본 경로가 벤더 SDK 를 끌고 들어왔다"
+
+try:
+    llm._load_vendor_sdk()
+except llm.LLMError as exc:
+    assert "[vendor]" in str(exc), str(exc)
+else:
+    raise AssertionError("SDK 가 없는데 _load_vendor_sdk 가 성공했다")
+
+print("OK")
+"""
+
+
+def test_core_path_runs_without_the_vendor_sdk() -> None:
+    """`anthropic` 이 없어도 기본 경로가 import 되고 동작한다.
+
+    코어 의존성에서 뺀 것(F7)이 **런타임에서도 참인지**를 여기서 잰다. 선언만
+    바꾸고 `import anthropic` 을 모듈 상단에 남겨 두면 기본 설치가 그 자리에서
+    깨지는데, 이 레포의 .venv 에는 SDK 가 깔려 있어 평소에는 드러나지 않는다.
+    별도 프로세스로 도는 이유가 그것이다 — 이미 import 된 모듈은 못 되돌린다.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", _BLOCK_VENDOR_SDK],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert "OK" in proc.stdout
+
+
+def test_vendor_sdk_is_an_extra_not_a_core_dependency() -> None:
+    """`pyproject.toml` 이 실제로 그렇게 적혀 있는지 잰다.
+
+    **설치돼 있는 것만으로 경로가 생긴다** — 게이트가 막는 것은 우리 코드를
+    지나는 호출뿐이고, SDK 와 키가 같은 머신에 있으면 스크립트 파일 하나로
+    두 계층 밖에서 나간다 (ADR-017 Consequences). 그래서 "코어에 없다"는
+    주석이 아니라 검사 대상이다.
+    """
+    meta = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = " ".join(meta["project"]["dependencies"])
+    extras = meta["project"]["optional-dependencies"]
+
+    assert "anthropic" not in core
+    assert any("anthropic" in dep for dep in extras["vendor"])
+
+
+def test_rollback_procedure_names_the_extra() -> None:
+    """롤백 절차 문서가 `[vendor]` 설치를 적고 있어야 한다.
+
+    ADR-020 은 롤백을 "`llm.provider` 한 줄"로 적었고 F1 이 그 한 줄이 실제로는
+    동작하지 않는다는 결함이었다. 의존성을 extra 로 내리면서 **그 한 줄이 다시
+    한 줄이 아니게 됐다** — 절차에 적히지 않으면 다음 롤백은 `LLMError` 로
+    시작한다.
+    """
+    adr = (PROJECT_ROOT / "docs" / "adr" / "ADR-020-model-capability-resolves-vendor-parameters.md")
+    assert "[vendor]" in adr.read_text(encoding="utf-8")

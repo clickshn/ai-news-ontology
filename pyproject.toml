@@ -11,9 +11,11 @@ requires-python = ">=3.11"          # enum.StrEnum 사용
 license = "MIT"
 authors = [{ name = "clickshn" }]
 
+# 기본 프로바이더는 내부 vLLM 이고(config.yaml: llm.provider), 그 구현체는
+# stdlib 만 쓴다 (extraction/vllm.py, ADR-018 / D-063). 그래서 벤더 SDK 는
+# 여기 없다 — 아래 `vendor` extra 참고.
 dependencies = [
     "pydantic>=2.13,<3",            # 온톨로지 스키마 정의 + LLM 출력 검증
-    "anthropic>=1.2,<2",            # LLM 호출 (기본 프로바이더)
     "feedparser>=6.0.14",           # RSS/Atom 수집
     "pyyaml>=6.0.3",                # config.yaml 로딩
     "python-dotenv>=1.2",           # .env 로딩
@@ -26,6 +28,17 @@ dev = [
 ]
 obs = [
     "langfuse>=3.0",                # observability/ 를 실제로 켤 때만 설치
+]
+# `llm.provider: anthropic` 으로 되돌릴 때만 설치한다 (`pip install -e .[vendor]`).
+# 코어에 두지 않는 이유는 취향이 아니라 전제다 — 설치돼 있는 것만으로
+# "스크립트 파일 하나로 뚫린다"는 경로가 생기고(ADR-017 Consequences),
+# MARA 는 외부 LLM 벤더 비의존이 전제다 (MARA ADR-021).
+#
+# ⚠️ **롤백은 설정 한 줄이 아니다.** `llm.provider` 를 바꾸기 전에 이 extra 를
+#    먼저 설치한다. 순서가 뒤집히면 클라이언트 생성 시점에 LLMError 가 난다
+#    (extraction/llm.py: _load_vendor_sdk). 절차는 ADR-020 Reversibility.
+vendor = [
+    "anthropic>=1.2,<2",            # 벤더 롤백 경로 전용 (ADR-020)
 ]
 
 # CLI 진입점은 파이프라인 구현 후 활성화한다.

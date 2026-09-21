@@ -16,11 +16,13 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_checkable
 
-import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:  # 타입 힌트 전용. 런타임에는 SDK 를 요구하지 않는다 (F7).
+    import anthropic
 
 from extraction.egress import (
     assert_internal_endpoint,
@@ -130,6 +132,37 @@ MODEL_UNSUPPORTED_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+def _load_vendor_sdk() -> Any:
+    """`anthropic` SDK 를 **필요한 순간에만** 가져온다 (F7).
+
+    코어 의존성에서 뺐기 때문에(`pyproject.toml: [project.optional-dependencies]
+    vendor`) 기본 설치에는 없다. **없는 것이 정상 상태**이고, 있어야 하는 것은
+    `provider: anthropic` 으로 되돌렸을 때뿐이다. 그래서 import 실패를 "설치가
+    깨졌다"가 아니라 **"롤백 절차를 덜 밟았다"** 로 말한다 (ADR-020 Reversibility).
+    """
+    try:
+        import anthropic
+    except ModuleNotFoundError as exc:  # pragma: no cover - 설치 상태에 달렸다
+        raise LLMError(
+            "`anthropic` SDK 가 설치돼 있지 않습니다. 벤더로 되돌리려면 "
+            "`pip install -e .[vendor]` 를 먼저 실행하세요 — `llm.provider` 한 "
+            "줄만 바꾸면 되는 것이 아닙니다 (ADR-020 Reversibility)."
+        ) from exc
+    return anthropic
+
+
+def _is_vendor_sdk_client(client: Any) -> bool:
+    """주입된 객체가 **진짜 벤더 SDK 클라이언트**인가.
+
+    판정에 SDK 를 import 하지 않는다. `anthropic.Anthropic` 인스턴스를 들고
+    있으려면 그 모듈이 **이미 `sys.modules` 에 있어야** 하므로, 없으면 그런
+    객체도 없다. 여기서 import 를 시도하면 **목 주입만 하는 실행이 SDK 설치를
+    요구하게 된다** — 벤더를 코어에서 뺀 것(F7)이 그 자리에서 무효가 된다.
+    """
+    module = sys.modules.get("anthropic")
+    return module is not None and isinstance(client, module.Anthropic)
+
+
 def unsupported_params(model: str | None) -> tuple[str, ...]:
     """`model` 이 거부하는 파라미터 이름들. 모르는 모델이면 빈 튜플."""
     for prefix, params in MODEL_UNSUPPORTED_PARAMS:
@@ -192,7 +225,7 @@ class AnthropicClient:
         # SDK 객체를 주입하는 경로는 통과시키지 않는다.** 그 경로까지 열어 두면
         # `client=` 한 글자가 게이트 전체의 우회로가 된다.
         self.stage = stage
-        if client is None or isinstance(client, anthropic.Anthropic):
+        if client is None or _is_vendor_sdk_client(client):
             assert_vendor_call_allowed(stage=stage, model=model)
             assert_internal_endpoint(endpoint_from_env(), field="LLM 엔드포인트 override")
 
@@ -256,7 +289,7 @@ class AnthropicClient:
         if workspace_id:
             headers["anthropic-workspace-id"] = workspace_id
 
-        self._client = anthropic.Anthropic(
+        self._client = _load_vendor_sdk().Anthropic(
             api_key=api_key,
             max_retries=max_retries,
             timeout=timeout,

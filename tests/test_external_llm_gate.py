@@ -220,8 +220,13 @@ def test_mock_client_injection_still_works(isolated_root):
 
 
 def test_injecting_a_real_sdk_object_is_not_a_loophole(isolated_root):
-    """`client=` 한 글자가 게이트 전체의 우회로가 되면 안 된다."""
-    import anthropic
+    """`client=` 한 글자가 게이트 전체의 우회로가 되면 안 된다.
+
+    SDK 가 없으면 **이 우회로 자체가 없다** — `vendor` extra 를 설치하지 않은
+    환경에서는 건너뛴다 (F7). 건너뛰는 것이 안전한 쪽인 이유는, 막을 대상이
+    존재할 수 없는 상태에서만 건너뛰기 때문이다.
+    """
+    anthropic = pytest.importorskip("anthropic")
 
     from extraction.llm import AnthropicClient
 
