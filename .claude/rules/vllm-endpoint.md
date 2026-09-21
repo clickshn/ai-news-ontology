@@ -1,3 +1,12 @@
+---
+paths:
+  - "extraction/vllm.py"
+  - "extraction/llm.py"
+  - "eval/runner.py"
+  - "export/replay.py"
+  - "config.yaml"
+  - ".env.example"
+---
 # 내부 vLLM 엔드포인트
 
 **목적지는 `.env` 의 `VLLM_BASE` 하나뿐이다.** KT Cloud AI Nexus 의 관리형 vLLM
