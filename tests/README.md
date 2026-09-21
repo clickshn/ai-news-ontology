@@ -27,6 +27,16 @@
   픽스처로 `tmp_path` 에 그 모양을 흉내 낸다.
 - 공용 입력 공장은 `conftest.py` 에 있다 — `make_payload` / `make_store` /
   `make_mara_root`.
+- **LLM 클라이언트는 `transport` 주입으로 세운다** (`test_vllm_client.py` ·
+  `test_export_replay_run.py`). 엔드포인트가 필요한 검사를 CI 계약에 넣지 않는다 —
+  엔드포인트는 관리형이고 할당이 끝나면 사라진다.
+
+`export/replay.py` 의 테스트는 **목이 달라서 둘로 갈려 있다.**
+
+| 파일 | 재는 것 |
+|---|---|
+| `test_export_replay.py` | **집계 계산** — 무엇을 스키마 실패로 세는가 (D-075) |
+| `test_export_replay_run.py` | **실행·디스크·CLI** — `run()`, `raw/` 선기록(D-052), 원자적 쓰기 |
 
 ## 게이트 검사
 
