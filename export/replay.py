@@ -77,6 +77,25 @@ def _write_json(path: Path, data: Any) -> None:
         raise
 
 
+def _persist_raw(client: Any, doc_id: str, out_dir: Path) -> dict[str, Any]:
+    """응답 원본을 **변환하기 전에** 내린다 (D-052). 반환값은 행에 합칠 파생 필드.
+
+    호출부가 이것을 `finally` 에서 부르는 이유는 순서가 규칙이기 때문이다 —
+    행을 만드는 코드가 터져도 응답은 이미 디스크에 있다. 잃는 것은 돈이 아니라
+    **같은 입력에 대한 그 모델의 응답**이고, 다시 부르면 그건 다른 응답이다.
+    """
+    raws = list(getattr(client, "last_raw_responses", []) or [])
+    if not raws:
+        # 전송이 실패해 응답이 하나도 없는 경우다. 빈 파일을 남기지 않는다 —
+        # 다음 실행이 그걸 "응답 0건짜리 결과"로 읽는다.
+        return {}
+    _write_json(out_dir / "raw" / safe_filename(doc_id), raws)
+    # finish_reason 은 "모델이 스키마를 못 지켰다"와 "토큰이 모자라 잘렸다"를
+    # 가르는 유일한 신호다. 둘을 같은 실패로 세면 ②의 수치가 디코딩 설정이
+    # 아니라 max_tokens 를 재게 된다.
+    return {"finish_reasons": [(r.get("choices") or [{}])[0].get("finish_reason") for r in raws]}
+
+
 def replay_one(
     stored: dict[str, Any],
     client: Any,
@@ -104,7 +123,13 @@ def replay_one(
     }
 
     try:
-        result = client.parse_into(system=system, user=user, output_model=NewsOntology)
+        try:
+            result = client.parse_into(system=system, user=user, output_model=NewsOntology)
+        finally:
+            # --- 원본을 먼저 내린다 (D-052) ---------------------------------
+            # 아래 `row |=` 들보다 **앞**이어야 한다. 행을 만드는 것이 곧 변환이고,
+            # 검증되지 않은 변환 코드와 값비싼 결과를 같은 트랜잭션에 두지 않는다.
+            row |= _persist_raw(client, doc_id, out_dir)
     except SchemaMismatchError as exc:
         # 이 이름을 `failure_kind` 가 읽는다. **한쪽만 바꾸면 비율이 조용히 틀린다.**
         row |= {
@@ -129,16 +154,6 @@ def replay_one(
             "ontology": ontology.model_dump(mode="json", by_alias=True),
         }
 
-    # --- 원본을 먼저 내린다 (D-052) -------------------------------------
-    raws = list(getattr(client, "last_raw_responses", []) or [])
-    if raws:
-        _write_json(out_dir / "raw" / safe_filename(doc_id), raws)
-        # finish_reason 은 "모델이 스키마를 못 지켰다"와 "토큰이 모자라 잘렸다"를
-        # 가르는 유일한 신호다. 둘을 같은 실패로 세면 ②의 수치가 디코딩 설정이
-        # 아니라 max_tokens 를 재게 된다.
-        row["finish_reasons"] = [
-            (r.get("choices") or [{}])[0].get("finish_reason") for r in raws
-        ]
     return row
 
 
@@ -203,6 +218,9 @@ def run(
         doc_ids = doc_ids[:limit]
 
     rows: list[dict[str, Any]] = []
+    # 0건 실행에도 누적본을 남긴다. 없으면 실행 디렉터리의 구성이 건수에 따라
+    # 달라져서, 읽는 쪽이 "rows.json 이 없는 실행"을 따로 다뤄야 한다.
+    _write_json(out_dir / "rows.json", rows)
     for index, doc_id in enumerate(doc_ids, start=1):
         stored = store.load(doc_id).payload
         print(f"[{index}/{len(doc_ids)}] {doc_id}", file=sys.stderr, flush=True)
