@@ -142,8 +142,14 @@ class FeedTooLargeError(ValueError):
     """응답이 `FEED_MAX_BYTES` 를 넘었다. 잘라서 파싱하지 않고 실패로 다룬다."""
 
 
-def _fetch_feed_bytes(url: str, *, timeout: float) -> tuple[bytes, str | None]:
-    """피드 본문을 bytes 로 받아온다.
+def fetch_feed_bytes(
+    url: str,
+    *,
+    timeout: float,
+    user_agent: str = USER_AGENT,
+    accept: str = FEED_ACCEPT,
+) -> tuple[bytes, str | None]:
+    """피드/API 본문을 bytes 로 받아온다.
 
     **`feedparser.parse(url)` 에 URL 을 넘기지 않는 이유는 타임아웃을 걸 자리가
     없기 때문이다.** feedparser 6.x 의 `parse` 시그니처에 timeout 인자가 없고
@@ -156,11 +162,20 @@ def _fetch_feed_bytes(url: str, *, timeout: float) -> tuple[bytes, str | None]:
     필요 없어졌다 — feedparser 가 상태를 노출할 때도 있고 아닐 때도 있어서
     있던 우회다.
 
+    **이 모듈 밖에서도 쓴다.** `export/urls.py` 가 arXiv API 에 같은 결함을
+    갖고 있었고(session-06 F13), 전송을 복사하면 상한·크기 제한·slow-drip 한계가
+    두 벌이 된다. 신원(`user_agent`)만 호출자가 정하고 **전송 방식은 하나로 둔다**
+    (D-072). 의존 방향은 기존과 같다 — `export` → `collectors`.
+
+    Args:
+        user_agent: 호출자 신원. arXiv 는 ToS 상 식별 가능한 UA 를 요구하고,
+            피드 수집과 계약 export 는 **다른 클라이언트**라 이름을 나눠 둔다.
+
     Returns:
         (본문 bytes, Content-Type 헤더). 헤더는 feedparser 에 그대로 넘겨
         인코딩 판정 힌트를 잃지 않기 위한 것이다.
     """
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": FEED_ACCEPT})
+    request = Request(url, headers={"User-Agent": user_agent, "Accept": accept})
     with urlopen(request, timeout=timeout) as response:
         # 상한을 넘겼는지 알아야 해서 1바이트 더 읽는다. 잘린 XML 을 그대로
         # 파싱하면 bozo 로 흘러가 원인이 "파싱 실패"로 잘못 기록된다.
@@ -201,7 +216,7 @@ def fetch_source(
     timeout = FETCH_TIMEOUT_S if timeout is None else timeout
 
     try:
-        data, content_type = _fetch_feed_bytes(url, timeout=timeout)
+        data, content_type = fetch_feed_bytes(url, timeout=timeout)
     except HTTPError as exc:  # URLError 의 서브클래스라 반드시 먼저 잡는다
         print(f"[fail] {name}: HTTP {exc.code}", file=sys.stderr)
         return []
