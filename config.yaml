@@ -98,7 +98,10 @@ llm:
     system_as_user: false
 
   relevance_gate:
-    model: "gemma-4-31B-it"      # 이전: claude-haiku-4-5-20251001 (D-015)
+    model: "gemma-4-31B-it"
+    # `provider: anthropic` 으로 되돌릴 때 쓰이는 벤더 모델명. 주석이 아니라
+    # 키인 이유는, 주석은 롤백 시 아무 일도 하지 않기 때문이다 (D-015, F1).
+    vendor_model: "claude-haiku-4-5-20251001"
     max_tokens: 1000
     # effort / thinking 은 **벤더 전용 파라미터**다. provider: vllm 에서는
     # 전달되지 않는다 (extraction/llm.py VENDOR_ONLY_PARAMS). 벤더로 되돌릴 때를
@@ -110,12 +113,15 @@ llm:
     temperature: 0
 
   extraction:
-    model: "gemma-4-31B-it"      # 이전: claude-opus-5
+    model: "gemma-4-31B-it"
+    vendor_model: "claude-opus-5"   # provider: anthropic 롤백 시 쓰인다
     max_tokens: 8000
     thinking: "adaptive"         # 벤더 전용. vllm 에서는 무시된다
     effort: "high"               # 벤더 전용. gemma 에는 대응 파라미터가 없다
-    # [주의] Opus 5 는 temperature 를 거부했다(400 "deprecated for this model").
-    # vLLM 은 받으므로 게이트와 같은 이유로 0 을 쓴다 (D-032). **이것은 모델
+    # [주의] Opus 5 는 temperature 를 거부한다(400 "deprecated for this model").
+    # vLLM 은 받으므로 게이트와 같은 이유로 0 을 쓴다 (D-032). 벤더로 되돌리면
+    # 이 값은 `extraction/llm.py: MODEL_UNSUPPORTED_PARAMS` 가 빼고 stderr 로
+    # 알린다 — **여기 값을 손으로 지울 필요가 없다** (D-067). **이것은 모델
     # 교체와 함께 바뀐 파라미터 차이이고, 대조 결과에 그대로 적는다** (D-063).
     temperature: 0
 
@@ -189,7 +195,9 @@ eval:
   #    그래서 이전 범위에 포함됐다 (MARA 사전 등록 §3③, ADR-018).
   # ⚠️ judge 와 후보가 같은 모델이 되어 **자기 선호 편향**이 생긴다. 이 점수는
   #    참고값이고 합격 판정은 통제어휘 이탈률·structured output 실패율이 한다.
-  judge_model: "gemma-4-31B-it"  # 이전: claude-opus-5
+  judge_model: "gemma-4-31B-it"
+  # 롤백용 벤더 judge 모델. `judge_model` 이 계속 정본이고 이건 그 짝이다 (F1).
+  judge_vendor_model: "claude-opus-5"
   golden_set_path: "eval/golden_set"
   scores_path: "eval/scores"
   # 아래 임계값 미달이면 파이프라인이 경고를 남긴다 (초안값, 측정 후 재조정)

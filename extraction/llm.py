@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +111,33 @@ def load_env(project_root: Path = PROJECT_ROOT) -> None:
     load_dotenv(project_root / ".env", override=False)
 
 
+# ---------------------------------------------------------------------------
+# 벤더 모델별 파라미터 지원 범위 (D-032 / D-033, F1)
+# ---------------------------------------------------------------------------
+#: 모델명 접두사 → **그 모델이 400 으로 거부하는** 요청 파라미터.
+#:
+#: 판정 기준은 `llm.provider` 가 아니라 **모델**이다. 프로바이더로 가르면 같은
+#: `anthropic` 안의 모델 차이를 표현할 수 없고, 실제로 거부하는 주체는 모델이다.
+#:
+#: 접두사로 맞추는 이유는 날짜 접미사(`claude-haiku-4-5-20251001`)가 붙는 모델을
+#: 버전마다 새로 등록하지 않기 위해서다. 표에 없는 모델은 **아무것도 빼지 않는다**
+#: — 모르는 모델에 우리가 능력을 가정하지 않는다.
+MODEL_UNSUPPORTED_PARAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # temperature is deprecated for this model (400)
+    ("claude-opus-5", ("temperature",)),
+    # output_config.effort 를 받지 않는다 (400)
+    ("claude-haiku-4-5", ("effort",)),
+)
+
+
+def unsupported_params(model: str | None) -> tuple[str, ...]:
+    """`model` 이 거부하는 파라미터 이름들. 모르는 모델이면 빈 튜플."""
+    for prefix, params in MODEL_UNSUPPORTED_PARAMS:
+        if (model or "").startswith(prefix):
+            return params
+    return ()
+
+
 class AnthropicClient:
     """Anthropic Messages API 기반 구조화 추출 클라이언트.
 
@@ -170,14 +198,43 @@ class AnthropicClient:
 
         self.model = model
         self.max_tokens = max_tokens
-        # effort/thinking/temperature 는 모델마다 지원 범위가 다르다. 지원하지 않는
-        # 모델에는 None / False 를 넘겨 파라미터 자체를 빼야 한다.
+
+        # effort/thinking/temperature 는 모델마다 지원 범위가 다르다.
         #   - Haiku 4.5: output_config.effort 거부(400). temperature 는 수용.
         #   - Opus 5   : temperature 거부(400, "deprecated for this model").
-        # (결정 로그 D-032)
+        # (결정 로그 D-032 / D-033)
+        #
+        # 예전에는 이 차이를 **호출부가** 알고 맞춰 넘기는 구조였다. 그래서
+        # `config.yaml` 이 내부 vLLM 기준으로 채워진 뒤 `llm.provider` 한 줄로
+        # 되돌리면, vLLM 이 받는 `temperature: 0` 이 그대로 Opus 5 로 실려 400 이
+        # 났다 — **ADR-018 이 안전장치로 내세운 롤백 경로가 런타임에 깨져 있었다.**
+        # 지원 범위를 아는 쪽이 맞추는 것이 옳으므로 여기서 뺀다.
+        dropped: list[str] = []
+        rejected = unsupported_params(self.model)
+        # "실린다"의 판정은 아래 `_request_kwargs` 와 같은 기준을 쓴다.
+        if "temperature" in rejected and temperature is not None:
+            dropped.append("temperature")
+            temperature = None
+        if "effort" in rejected and effort:
+            dropped.append("effort")
+            effort = None
+        if "thinking" in rejected and thinking:
+            dropped.append("thinking")
+            thinking = False
+
         self.effort = effort
         self.thinking = thinking
         self.temperature = temperature
+        #: 이 클라이언트에서 실제로 빠진 파라미터 이름. **조용히 버리지 않는다** —
+        #: 파라미터가 사라진 것과 무시된 것은 다르고, 대조 실행에서 "무엇이
+        #: 달랐나"를 적으려면 목록이 필요하다 (VENDOR_ONLY_PARAMS 와 같은 이유).
+        self.dropped_params: tuple[str, ...] = tuple(dropped)
+        if dropped:
+            print(
+                f"[llm] {self.model} 이(가) 거부하는 파라미터를 제외했습니다: "
+                f"{', '.join(dropped)} (stage={stage})",
+                file=sys.stderr,
+            )
 
         if client is not None:
             # 테스트에서 목 클라이언트를 주입하는 경로.
@@ -226,8 +283,12 @@ class AnthropicClient:
         if not isinstance(section, dict):
             section = llm  # 하위 블록이 없는 구버전 설정
 
+        # `model` 은 **지금 도는 프로바이더**의 모델명이다. vLLM 이전(ADR-018)이
+        # 세 단계의 `model` 을 gemma 로 제자리에 덮어썼기 때문에, 그 값을 그대로
+        # 벤더로 보내면 존재하지 않는 모델을 부른다. 벤더 쪽 모델명은 주석이 아니라
+        # **키**로 남긴다 (`vendor_model`) — 주석은 롤백 시 아무 일도 하지 않는다.
         kwargs: dict[str, Any] = {
-            "model": section.get("model", "claude-opus-5"),
+            "model": section.get("vendor_model") or section.get("model", "claude-opus-5"),
             "max_tokens": section.get("max_tokens", 8000),
             # effort 가 명시적으로 null 이면 파라미터를 보내지 않는다.
             "effort": section.get("effort", "high"),

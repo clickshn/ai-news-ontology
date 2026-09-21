@@ -318,6 +318,12 @@ def judge_client_from_config(config: Mapping[str, Any], **overrides: Any):
     section.setdefault("max_tokens", 4000)
     section.setdefault("effort", "high")
     section["model"] = model
+    # 벤더로 되돌렸을 때 쓸 judge 모델명. `judge_model` 과 같은 블록에 두어 정본과
+    # 그 짝이 떨어지지 않게 한다 — 여기서 안 넘기면 롤백이 gemma 모델명을 벤더로
+    # 보낸다 (F1).
+    vendor_model = eval_cfg.get("judge_vendor_model")
+    if vendor_model:
+        section["vendor_model"] = vendor_model
     llm_cfg["eval_judge"] = section
     config["llm"] = llm_cfg
 
