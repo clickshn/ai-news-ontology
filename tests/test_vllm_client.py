@@ -203,8 +203,13 @@ def test_factory_builds_a_vllm_client_per_stage(monkeypatch):
     )
 
 
-def test_factory_drops_vendor_only_parameters(monkeypatch):
-    """`effort` / `thinking` 은 gemma 에 대응 개념이 없다. 보내지 않는다."""
+def test_factory_drops_vendor_only_parameters(monkeypatch, capsys):
+    """`effort` / `thinking` 은 gemma 에 대응 개념이 없다. 보내지 않는다.
+
+    **보내지 않는 것으로 끝나지 않는다** (F6). 이 엔드포인트는 모르는 파라미터에
+    200 을 주고 아무 일도 하지 않으므로(ADR-019), 알리지 않으면 `effort: high` 가
+    걸린 실행과 안 걸린 실행이 응답만 봐서는 구분되지 않는다.
+    """
     monkeypatch.setenv("VLLM_BASE", "https://vllm.internal.invalid/v1")
     config = {
         "llm": {
@@ -215,6 +220,49 @@ def test_factory_drops_vendor_only_parameters(monkeypatch):
     c = client_from_config(config, stage="extraction")
     assert not hasattr(c, "effort")
     assert not hasattr(c, "thinking")
+    assert c.omitted_vendor_params == ("effort", "thinking")
+    err = capsys.readouterr().err
+    assert "effort" in err and "thinking" in err
+
+
+def test_factory_stays_quiet_when_vendor_params_are_off(monkeypatch, capsys):
+    """끄는 값(`effort: null`, `thinking: "disabled"`)은 "빠졌다"고 말하지 않는다.
+
+    켜지 않은 것을 매 실행 알리면 그 줄이 상시 소음이 되고, **진짜 빠진 경우가
+    그 소음에 섞인다.** 지금 레포의 `relevance_gate` 설정이 정확히 이 모양이다.
+    """
+    monkeypatch.setenv("VLLM_BASE", "https://vllm.internal.invalid/v1")
+    config = {
+        "llm": {
+            "provider": "vllm",
+            "relevance_gate": {
+                "model": "gemma-4-31B-it",
+                "effort": None,
+                "thinking": "disabled",
+            },
+        }
+    }
+    c = client_from_config(config, stage="relevance_gate")
+    assert c.omitted_vendor_params == ()
+    assert capsys.readouterr().err == ""
+
+
+def test_vendor_only_params_reading_matches_the_vendor_client():
+    """보고하는 목록이 **벤더로 되돌렸을 때 실제로 나가는 것**과 같아야 한다.
+
+    두 판정이 갈리면 "빠졌다"고 알린 이름과 롤백 후 실려 나가는 이름이 달라져,
+    대조 실행의 "무엇이 달랐나"가 틀린 값을 갖게 된다.
+    """
+    from extraction.llm import AnthropicClient, vendor_only_params_in
+
+    section = {"model": "gemma-4-31B-it", "effort": "high", "thinking": "disabled"}
+    vendor = AnthropicClient.from_config(
+        {"llm": {"extraction": {**section, "vendor_model": "gemma-4-31B-it"}}},
+        stage="extraction",
+        client=object(),
+    )
+    assert vendor_only_params_in(section) == ("effort",)
+    assert vendor.effort == "high" and vendor.thinking is False
 
 
 def test_factory_rejects_an_unknown_provider():

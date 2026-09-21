@@ -421,7 +421,29 @@ PROVIDERS = ("vllm", "anthropic")
 #: 내부 vLLM 에서 의미가 없는 벤더 전용 파라미터. 조용히 버리지 않고 **이름을
 #: 남긴다** — 파라미터가 사라진 것과 무시된 것은 다르고, 대조 실행에서 "무엇이
 #: 달랐나"를 적으려면 그 목록이 필요하다 (사전 등록 §2.1).
+#:
+#: ⚠️ `MODEL_UNSUPPORTED_PARAMS` 와 **방향이 반대다. 합치지 않는다.** 저쪽은
+#: *벤더가 400 으로 거부하는* 파라미터라 보내면 요청이 실패하고, 이쪽은
+#: *vLLM 이 조용히 무시하는* 파라미터라 보내도 200 이 온다 (ADR-019). 실패
+#: 신호가 하나는 있고 하나는 없다는 것이 두 목록을 나눠 두는 이유다.
 VENDOR_ONLY_PARAMS = ("effort", "thinking")
+
+
+def vendor_only_params_in(section: dict[str, Any]) -> tuple[str, ...]:
+    """`section`(`llm.<stage>`)에 **켜져 있는** 벤더 전용 파라미터 이름들.
+
+    끄는 값(`effort: null`, `thinking: "disabled"`)은 세지 않는다 — 켜지 않은
+    것을 "빠졌다"고 알리면 매 실행 stderr 에 같은 줄이 붙고, 그러면 진짜
+    빠진 경우가 그 줄에 섞인다. 판정은 `AnthropicClient.from_config` 가 같은
+    키를 읽는 방식과 맞춘다 (둘이 갈리면 벤더로 되돌렸을 때 보고된 목록과
+    실제로 나간 파라미터가 달라진다).
+    """
+    section = section or {}
+    enabled = {
+        "effort": bool(section.get("effort")),
+        "thinking": (section.get("thinking") or "disabled") != "disabled",
+    }
+    return tuple(name for name in VENDOR_ONLY_PARAMS if enabled[name])
 
 
 def client_from_config(
@@ -466,6 +488,11 @@ def client_from_config(
         "temperature": section.get("temperature", 0.0),
         "system_as_user": bool(vllm_cfg.get("system_as_user", False)),
         "stage": stage,
+        # 벤더 전용 파라미터는 payload 에 넣지 않는다. **설정에 남아 있는 것을
+        # 알리는 것까지가 이 함수의 몫이다** — 보내 봐야 이 엔드포인트는 200 을
+        # 주고 아무 일도 하지 않으므로(ADR-019), 알리지 않으면 `effort: high` 가
+        # 걸린 실행과 안 걸린 실행이 구분되지 않는다.
+        "omitted_vendor_params": vendor_only_params_in(section),
     }
     if vllm_cfg.get("base_url"):
         kwargs["base_url"] = vllm_cfg["base_url"]

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -119,6 +120,7 @@ class VLLMClient:
         timeout: float = 300.0,
         stage: str = "unspecified",
         system_as_user: bool = False,
+        omitted_vendor_params: tuple[str, ...] = (),
         transport: Any | None = None,
         project_root: Path | None = None,
     ) -> None:
@@ -128,6 +130,9 @@ class VLLMClient:
                 앞에 붙인다. **프롬프트 파일은 바뀌지 않지만 전달 형태가 바뀐다** —
                 gemma 계열 채팅 템플릿이 system 역할을 거부하는 경우에만 켠다.
                 실측 결과는 ADR-018 Evidence 에 있다.
+            omitted_vendor_params: 설정에는 켜져 있지만 payload 에 넣지 않은
+                벤더 전용 파라미터 이름들 (`extraction/llm.py:
+                VENDOR_ONLY_PARAMS`). 채우는 쪽은 `client_from_config` 다.
             transport: 테스트용 주입 지점. `(url, payload, timeout) -> dict`.
                 네트워크로 나가지 않으므로 엔드포인트 검사를 요구하지 않는다.
         """
@@ -138,6 +143,19 @@ class VLLMClient:
         self.timeout = timeout
         self.system_as_user = system_as_user
         self._transport = transport
+        #: payload 에 넣지 않은 벤더 전용 파라미터. **조용히 빠뜨리지 않는다** —
+        #: 이 엔드포인트는 모르는 파라미터에 200 을 주고 아무 일도 하지 않아서
+        #: (ADR-019) 보내든 안 보내든 응답이 같다. 그래서 "빠졌다"를 말해 주는
+        #: 곳이 여기밖에 없다. `AnthropicClient.dropped_params` 와 **다른 것이다**:
+        #: 저쪽은 보냈으면 400 이 났을 파라미터다.
+        self.omitted_vendor_params: tuple[str, ...] = tuple(omitted_vendor_params)
+        if self.omitted_vendor_params:
+            print(
+                f"[llm] vLLM 은 벤더 전용 파라미터를 받지 않습니다. 설정에 있지만 "
+                f"보내지 않은 항목: {', '.join(self.omitted_vendor_params)} "
+                f"(stage={stage})",
+                file=sys.stderr,
+            )
         #: 마지막 `parse_into` 가 받은 **원본 응답들**. 변환하기 전에 디스크로
         #: 옮길 수 있게 남겨 둔다 (D-052: 값비싼 결과와 검증되지 않은 변환 코드를
         #: 같은 트랜잭션에 두지 않는다). 재시도가 있으면 2건이 된다.
