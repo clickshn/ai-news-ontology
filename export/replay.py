@@ -50,6 +50,9 @@ from extraction.schema import NewsOntology
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPLAY_DIR = PROJECT_ROOT / "data" / "replays"
 
+#: 스키마 실패로 세는 **유일한** 실패 이름. `replay_one` 이 `failure` 에 적는다.
+SCHEMA_FAILURE = "SchemaMismatchError"
+
 
 def raw_item_from_stored(payload: dict[str, Any]) -> RawItem:
     """보존된 `raw_item` 을 그대로 되살린다.
@@ -103,14 +106,17 @@ def replay_one(
     try:
         result = client.parse_into(system=system, user=user, output_model=NewsOntology)
     except SchemaMismatchError as exc:
+        # 이 이름을 `failure_kind` 가 읽는다. **한쪽만 바꾸면 비율이 조용히 틀린다.**
         row |= {
             "ok": False,
-            "failure": "SchemaMismatchError",
+            "failure": SCHEMA_FAILURE,
             "attempts": exc.attempts,
             "last_error": str(exc.last_error)[:2000],
         }
         ontology = None
     except Exception as exc:  # noqa: BLE001 — 전송 계층 실패도 결과에 남긴다
+        # 여기 남는 이름은 **전송 실패**로 분류된다 (D-075). 모델에게 물어보지
+        # 못한 건이라 스키마 실패율의 분자에도 분모에도 들어가지 않는다.
         row |= {"ok": False, "failure": type(exc).__name__, "last_error": str(exc)[:2000]}
         ontology = None
     else:
@@ -134,6 +140,44 @@ def replay_one(
             (r.get("choices") or [{}])[0].get("finish_reason") for r in raws
         ]
     return row
+
+
+def failure_kind(row: dict[str, Any]) -> str | None:
+    """`None` = 성공 / `"schema"` = 모델이 계약을 못 지켰다 / `"transport"` = **못 물어봤다.**
+
+    둘을 가르는 것이 이 함수의 전부다. 같은 칸에 세면 **네트워크가 끊긴 날의 실행이
+    "모델이 스키마를 못 지킨다"로 기록된다** — 사전 등록 §3② 가 재려는 것은 모델의
+    계약 준수이고, 전송 실패는 그 축의 관측이 아니라 **관측 실패**다.
+    """
+    if row.get("ok"):
+        return None
+    return "schema" if row.get("failure") == SCHEMA_FAILURE else "transport"
+
+
+def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """행 목록 → 집계. 실행과 분리해 둔 이유는 **이 계산을 직접 재기 위해서다.**
+
+    ## 분모에서 전송 실패를 뺀다
+
+    전송이 실패한 건은 모델에게 **물어보지 못한 건**이다. 분모에 남겨 두면 회선이
+    나쁜 날일수록 실패율이 **낮게** 나온다 — 재지 못한 것이 "잘한 것"으로 읽힌다.
+    D-050 과 같은 계산이다: 재지 못한 것을 잰 것처럼 쓰지 않는다. 그래서 전부 전송
+    실패면 비율은 `0.0` 이 아니라 **`None`** 이고, 분모(`measured_items`)를 같이
+    적어 **몇 건을 재고 나온 비율인지** 보이게 한다.
+    """
+    kinds = [failure_kind(row) for row in rows]
+    schema_failures = kinds.count("schema")
+    transport_failures = kinds.count("transport")
+    measured = len(rows) - transport_failures
+    return {
+        "item_count": len(rows),
+        "measured_items": measured,
+        "schema_failures": schema_failures,
+        "transport_failures": transport_failures,
+        "schema_failure_rate": round(schema_failures / measured, 4) if measured else None,
+        "retried": sum(1 for row in rows if (row.get("attempts") or 1) > 1),
+        "truncated": sum(1 for row in rows if "length" in (row.get("finish_reasons") or [])),
+    }
 
 
 def run(
@@ -167,18 +211,13 @@ def run(
         # 매 건마다 누적본을 갱신한다. 중간에 죽어도 거기까지는 남는다.
         _write_json(out_dir / "rows.json", rows)
 
-    ok = [r for r in rows if r.get("ok")]
     summary = {
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "provider": ((config.get("llm") or {}).get("provider")),
         "model": getattr(client, "model", None),
         "prompt_name": prompt.name,
-        "item_count": len(rows),
-        "schema_failures": len(rows) - len(ok),
-        "schema_failure_rate": round((len(rows) - len(ok)) / len(rows), 4) if rows else None,
-        "retried": sum(1 for r in rows if (r.get("attempts") or 1) > 1),
-        "truncated": sum(1 for r in rows if "length" in (r.get("finish_reasons") or [])),
+        **summarize_rows(rows),
     }
     _write_json(out_dir / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
