@@ -1,8 +1,12 @@
-"""export 계약 테스트용 공용 픽스처.
+"""테스트 공용 픽스처 — 입력 공장과 **오프라인 보장**.
 
-여기 있는 것은 **보존소 페이로드를 손으로 만드는 공장**이다. 실제 추출
+여기 있는 공장은 **보존소 페이로드를 손으로 만드는 것**이다. 실제 추출
 결과(`data/extractions/`)를 테스트가 읽게 하면 테스트가 특정 실행 산출물에
 묶이고, 그 산출물이 지워지는 순간 조용히 깨진다.
+
+`no_outbound_network` 는 **전체 테스트에 무조건 걸리는** 소켓 트립와이어다
+(autouse). 판정 로직은 `tests/offline_guard.py` 에 있다 — 예외 클래스를 테스트가
+import 해야 해서 `conftest.py` 에 두면 모듈이 둘로 갈린다.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from typing import Any
 import pytest
 
 from export.store import STORE_SCHEMA, ExtractionStore
+from tests import offline_guard
 
 
 def _ontology(**overrides: Any) -> dict[str, Any]:
@@ -123,3 +128,18 @@ def make_mara_root(tmp_path) -> Callable[..., Any]:
         return root
 
     return factory
+
+
+# ---------------------------------------------------------------------------
+# 오프라인 보장 — 테스트는 바깥으로 나가지 않는다
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def no_outbound_network(monkeypatch) -> list[str]:
+    """**모든** 테스트에 걸리는 소켓 트립와이어. 판정은 `tests/offline_guard.py`.
+
+    session-07 에서 기존 테스트 3건이 전송 목을 잃고 **진짜 arXiv 로 나갔다.**
+    그때도 트립와이어는 있었지만 `test_blocked_state_run.py` 의 픽스처 **안에만**
+    있었다 — 벤더 호출 지점을 세는 검사에는 걸려 있고 나머지 499건에는 없었다.
+    그래서 여기(autouse)로 올린다. 개별 테스트가 요청하지 않아도 걸린다.
+    """
+    return offline_guard.install(monkeypatch)
