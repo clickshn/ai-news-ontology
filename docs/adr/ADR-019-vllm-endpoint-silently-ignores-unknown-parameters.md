@@ -4,7 +4,8 @@
 - **Date:** 2026-09-18
 - **Decision:** KT Cloud AI Nexus vLLM 엔드포인트가 **모르는 요청 파라미터를 400 으로 거절하지 않고 조용히 무시한다**는 것을 실측으로 확정하고, 그 결과 **structured output 강제가 이름 하나로 사라질 수 있다**는 것을 이 레포의 상시 제약으로 못 박는다. 강제 여부는 문서나 파라미터 이름으로 믿지 않고 **"JSON 을 쓰지 마라" 반증 probe** 로 확인한다. 이 레포가 쓰는 강제 파라미터는 `response_format={"type":"json_schema", ...}` 하나로 고정한다.
 - **Scope:** ai-news-ontology (`extraction/vllm.py` 및 이 엔드포인트를 쓰는 모든 코드)
-- **Decision Source:** Agent (session-03 실측) / 기록 지시는 Human
+- **Decision Source:** AI-Inferred (session-03 실측) / 기록 지시는 Human
+- **Confidence:** High
 
 ---
 
