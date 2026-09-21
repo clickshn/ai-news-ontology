@@ -110,10 +110,29 @@ def dump_frontmatter(data: dict[str, Any]) -> str:
     )
 
 
+#: 위키링크 **안에서 구분자로 읽히는** 문자 → 대체할 문자열.
+#:
+#: `|` 는 별칭 구분자(`[[대상|보이는 글자]]`), `#` 은 제목 구분자
+#: (`[[대상#소제목]]`)다. 둘 다 링크를 깨지 않고 **다른 대상을 가리키게** 만든다
+#: — `[[C#]]` 은 깨진 링크가 아니라 `C` 노트의 빈 제목으로 가는 멀쩡한 링크다.
+#: 그래서 오류가 아니라 **조용히 틀린 그래프**가 남는다 (D-030 이 막으려던 것과
+#: 같은 종류의 분기다).
+_LINK_DELIMITERS = {"|": " ", "#": " "}
+
+
 def _wikilink(value: str) -> str:
-    """Obsidian 위키링크. `[[`, `]]`, `|` 는 링크 문법을 깨므로 제거한다."""
-    cleaned = value.replace("[[", "").replace("]]", "").replace("|", " ").strip()
-    return f"[[{cleaned}]]"
+    """Obsidian 위키링크. 링크 문법을 깨거나 **대상을 바꾸는** 문자를 지운다.
+
+    ⚠️ 한계: Obsidian 위키링크 대상에는 `#` 를 담을 방법이 없다(이스케이프
+    문법이 없다). 그래서 `C#` 같은 이름은 `C` 가 되어 다른 노드와 합쳐진다.
+    담을 방법이 없는 것을 담은 척하는 것보다 낫다고 보고 이쪽을 골랐다 —
+    되돌리려면 위키링크가 아니라 마크다운 링크(`[C#](C%23.md)`)로 바꿔야 하고,
+    그건 `관련 개념` 블록 전체의 표현을 바꾸는 일이다.
+    """
+    cleaned = value.replace("[[", "").replace("]]", "")
+    for char, replacement in _LINK_DELIMITERS.items():
+        cleaned = cleaned.replace(char, replacement)
+    return f"[[{cleaned.strip()}]]"
 
 
 def render_body(ontology: NewsOntology, context: NoteContext) -> str:

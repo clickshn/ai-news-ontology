@@ -178,6 +178,26 @@ def test_wikilink_strips_breaking_characters(item):
     assert "[[AB C]]" in body
 
 
+def test_wikilink_strips_heading_separator(item):
+    """`#` 도 `|` 와 같이 지운다 (F8).
+
+    `[[RAG#평가]]` 는 **깨진 링크가 아니다** — `RAG` 노트의 `평가` 절을 가리키는
+    멀쩡한 링크다. 그래서 오류가 나지 않고, 대신 개념 하나가 엉뚱한 노트의
+    소제목으로 빨려 들어간다. `|` 와 같은 이유로 같은 자리에서 막는다.
+    """
+    payload = {**ONTOLOGY_PAYLOAD, "관련기존기술": ["RAG#평가"]}
+    body = render_body(NewsOntology.model_validate(payload), NoteContext(item=item))
+    assert "[[RAG 평가]]" in body
+    assert "[[RAG#" not in body
+
+
+def test_wikilink_strips_heading_separator_in_company_links(item):
+    """기업 링크도 같은 함수를 지난다 — 한쪽만 고치면 그래프가 갈린다 (D-030)."""
+    payload = {**ONTOLOGY_PAYLOAD, "관련기업": [{"원문표기": "A#B", "역할": "개발"}]}
+    body = render_body(NewsOntology.model_validate(payload), NoteContext(item=item))
+    assert "[[A B]]" in body
+
+
 def test_render_note_starts_with_frontmatter(ontology, context):
     note = render_note(ontology, context)
     assert note.startswith("---\n")
