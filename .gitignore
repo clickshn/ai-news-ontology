@@ -40,6 +40,9 @@ Thumbs.db
 # 단, 디렉터리 자체는 .gitkeep 으로 유지한다.
 eval/scores/*.json
 eval/scores/*.jsonl
+# `*.json` 은 하위 디렉터리를 덮지 않는다. `eval/scores/raw/` 에는 **LLM 원본
+# 응답이 평문으로** 남으므로(`eval/predict.py`, D-052) 디렉터리째 제외한다.
+eval/scores/raw/
 !.gitkeep
 
 # 수집 원문 / 중간 산출물 (용량이 크고 저작권 이슈가 있을 수 있음)

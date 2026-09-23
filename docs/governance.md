@@ -107,7 +107,8 @@
 | `data/corpus/` | export 산출물 JSONL·manifest | O (`data/`) |
 | `data/replays/` | 대조 실행 산출물 — `rows.json`·`summary.json` 과 **`raw/` 아래의 LLM 원본 응답** (D-052) | O (`data/`) |
 | `observability/logs/` | 게이트 스킵 기록, 미등록 기업 큐 | O (`logs/`) |
-| `eval/scores/` | judge 채점 결과 | O |
+| `eval/scores/` | judge 채점 결과, 골든셋 예측(`preds.jsonl`)과 그 메타 | O |
+| `eval/scores/raw/` | 골든셋 재추출의 **LLM 원본 응답** (`eval/predict.py`, D-052) | O |
 
 **커밋되지 않는 것과 디스크에 없는 것은 다르다.** 로컬 디스크·백업·화면 공유는
 여전히 노출 경로다.
@@ -115,7 +116,8 @@
 - **보존 기간:** 정해진 일수 없음. 필요 없다고 판단하면 지운다.
 - **접근 권한:** 별도 통제 없음 — 로컬 파일시스템 권한을 따른다. 그 머신에 로그인할
   수 있는 주체가 곧 접근 주체다.
-- **삭제:** `rm -rf data/extractions data/corpus data/replays` / `rm -rf observability/logs`.
+- **삭제:** `rm -rf data/extractions data/corpus data/replays` / `rm -rf observability/logs`
+  / `rm -rf eval/scores/raw`.
   ⚠️ `data/replays/*/raw/` 는 **다시 만들 수 없다** — 같은 입력에 대한 그 모델의
   응답이고, 재실행하면 같은 값이 나온다는 보장이 없다 (`export/replay.py` 모듈 설명).
 
