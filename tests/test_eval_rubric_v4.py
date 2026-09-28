@@ -307,3 +307,42 @@ def test_v4_fixes_the_ai_news_wording():
     v4 = load_judge_prompt("summary_quality.v4.md").system
     assert "AI 관련 뉴스·논문" in v4
     assert "AI 뉴스 요약의" not in v4
+
+
+# ---------------------------------------------------------------------------
+# 5. v5 — 한 줄 형식 (D-094). v4 와 형식 지시 외에는 같아야 원인을 가를 수 있다
+# ---------------------------------------------------------------------------
+V5_RATIONALE = (
+    "①사건: 충족 — (a) 담김 | ②범위: 미충족 — (a) 없음 | ③정도: 부분 — (a) 담김 / (b) 없음 "
+    "| ④경위: 분모 제외 → 합계 1.5 / 분모 3 → 점수 3"
+)
+
+
+def test_parser_reads_v5_single_line_format():
+    assert slot_states(V5_RATIONALE) == {1: "full", 2: "none", 3: "partial", 4: "excluded"}
+    assert stated_denominator(V5_RATIONALE) == 3
+    assert completeness_from_states(slot_states(V5_RATIONALE)) == 3
+
+
+def test_v5_has_no_multiline_output_instruction():
+    """퇴화(D-093)의 유력한 원인이던 여러 줄 형식 지시·코드블록이 없다."""
+    v5 = load_judge_prompt("summary_quality.v5.md").system
+    assert "```" not in v5
+    assert "줄을 바꾸지 않는다" in v5
+
+
+def test_v5_differs_from_v4_only_in_output_format():
+    import re
+
+    def strip_format(text: str) -> str:
+        text = re.sub(r"\*\*근거는 반드시.*?(?=\n> 완결성과)", "", text, flags=re.S)
+        return re.sub(r"\*\*요약\*\*:.*?(?=r = 0\.5)", "", text, flags=re.S)
+
+    v4 = load_judge_prompt("summary_quality.v4.md")
+    v5 = load_judge_prompt("summary_quality.v5.md")
+    assert v4.user == v5.user
+    assert strip_format(v4.system) == strip_format(v5.system)
+
+
+def test_v5_requires_slots():
+    assert prompt_requires_completeness_slots(load_judge_prompt("summary_quality.v5.md"))

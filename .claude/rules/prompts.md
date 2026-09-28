@@ -12,3 +12,7 @@ paths:
 - **통제어휘 목록을 하드코딩하지 않는다.** `{{tech_domain_list}}` 처럼 두고
   `schema.py` Enum 에서 런타임 주입한다 (D-012).
 - 새 버전을 만들면 `extraction/prompts/README.md` 의 표에 무엇이 달라졌는지 적는다.
+- **구조화 출력 필드에 여러 줄 형식을 지시하지 않는다.** 한 줄로 쓰게 하고 줄바꿈이
+  필요하면 구분자(`|`)로 대신한다. `summary_quality.v4` 가 근거를 슬롯마다 한 줄씩
+  쓰라고 했다가 **공백 루프(퇴화)** 로 전 회차 실패했다 (D-093,
+  `.claude/rules/vllm-endpoint.md` "실패를 한 칸에 넣지 않는다").
