@@ -98,6 +98,55 @@ class HumanSummaryScores(BaseModel):
     concision: Score1to5 = Field(alias="간결성")
 
 
+#: 완결성 4슬롯의 라벨 키 (v3 슬롯 정의, D-045). 번호는 `eval.analysis.SLOT_NAMES` 와 같다.
+COMPLETENESS_SLOT_KEYS = ("사건", "범위", "정도", "경위")
+
+
+class CompletenessSlots(BaseModel):
+    """완결성 슬롯마다 **원문이 제공한 핵심 요소** — 사람이 확정한다 (D-089).
+
+    v3 은 "원문이 제공하지 않은 슬롯은 분모에서 뺀다"를 judge 가 매 회차 판단하게
+    두었고, 같은 요약에 3/4 와 3/3 이 번갈아 나왔다(D-088). 판정 주체가 judge 인 한
+    규칙을 아무리 적어도 그 판단은 샘플링마다 다시 일어난다. 그래서 분모와 슬롯
+    내용을 **라벨로** 고정한다.
+
+    - **빈 목록 = 원문이 그 슬롯을 주지 않았다 = 분모 제외.** 네 키는 모두 필수다 —
+      키가 빠진 것과 "주지 않았다고 판단했다"를 구분하기 위해서다.
+    - ①사건은 비울 수 없다. 사건이 없는 기사는 채점 대상이 아니다.
+    - 요소는 원자 단위로, 슬롯당 최대 3개. 같은 요소를 두 슬롯에 넣지 않는다
+      (`eval/golden_set/README.md` 라벨링 가이드).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    event: list[str] = Field(alias="사건", min_length=1, max_length=3)
+    scope: list[str] = Field(alias="범위", max_length=3)
+    degree: list[str] = Field(alias="정도", max_length=3)
+    process: list[str] = Field(alias="경위", max_length=3)
+
+    @model_validator(mode="after")
+    def _elements_are_distinct_and_filled(self) -> "CompletenessSlots":
+        seen: set[str] = set()
+        for key, elements in zip(COMPLETENESS_SLOT_KEYS, self.by_slot().values()):
+            for element in elements:
+                text = element.strip()
+                if not text:
+                    raise ValueError(f"completeness_slots.{key}: 빈 요소가 있습니다")
+                if text in seen:
+                    raise ValueError(f"completeness_slots.{key}: 요소 {text!r} 가 두 슬롯에 들어 있습니다")
+                seen.add(text)
+        return self
+
+    def by_slot(self) -> dict[int, list[str]]:
+        """`{슬롯번호: 요소 목록}` — 번호는 ①~④."""
+        return {1: self.event, 2: self.scope, 3: self.degree, 4: self.process}
+
+    @property
+    def denominator(self) -> int:
+        """원문이 제공한 슬롯 수 = 요소가 하나 이상 있는 슬롯 수."""
+        return sum(1 for elements in self.by_slot().values() if elements)
+
+
 class GoldenItem(BaseModel):
     """골든셋 1건."""
 
@@ -119,6 +168,10 @@ class GoldenItem(BaseModel):
     # 같은 이유다(D-010) — 규칙이 바뀌면 라벨의 의미도 바뀌는데, 어느 규칙에서
     # 나온 라벨인지 모르면 나중에 재라벨링 대상을 고를 수 없다. (D-046)
     labeling_guideline: str | None = None
+    # 완결성 분모·슬롯 요소. v4 루브릭이 요구하고 v3 이하는 쓰지 않는다 (D-089).
+    # confirmed 필수가 아닌 이유: v3 로 채점하는 경로가 계속 유효하다. 없는 채로
+    # v4 를 돌리려 하면 호출 전에 멈춘다(`eval.runner.check_judge_inputs`).
+    completeness_slots: CompletenessSlots | None = None
 
     @model_validator(mode="after")
     def _confirmed_items_must_be_complete(self) -> "GoldenItem":
@@ -254,6 +307,13 @@ class ItemScore(BaseModel):
     judgement: SummaryJudgement | None = None
     judge_usage: JudgeUsage | None = None
     human_summary_scores: HumanSummaryScores | None = None
+    labeled_denominator: int | None = Field(
+        default=None,
+        description=(
+            "골든셋 `completeness_slots` 가 정한 완결성 분모. 루브릭과 관계없이 라벨이 있으면 "
+            "남긴다 — v3 회차의 분모도 같은 기준으로 대조하기 위해서다 (D-089)"
+        ),
+    )
     metadata: RunMetadata = Field(default_factory=RunMetadata)
     errors: list[str] = Field(default_factory=list)
 
@@ -342,6 +402,35 @@ class RepeatStats(BaseModel):
         description="슬롯별로 '충족' 판정을 받은 회차의 비율. 점수가 아니라 판정 근거가 재현되는지를 본다",
     )
     failures: int = Field(default=0, description="judge 호출이 실패한 회차 수")
+
+    # --- v4 과정 검사 (D-089 ~ D-091). 점수와 독립적으로 "루브릭이 적용됐는가"를 본다.
+    # `slot_adherence`·`slot_fill_rate` 는 v3 의미 그대로 둔다 — 바꾸면 session-12 까지의
+    # 기록을 재집계했을 때 다른 값이 나온다.
+    labeled_denominator: int | None = Field(
+        default=None, description="골든셋 라벨이 정한 분모. 라벨이 없으면 None"
+    )
+    denominator_adherence: float | None = Field(
+        default=None,
+        description=(
+            "근거에 적힌 분모가 라벨 분모와 같은 회차의 비율. v3 회차에도 계산한다 — "
+            "session-12 의 3/4 · 3/3 교대가 이 값으로 드러난다. 라벨이 없으면 None"
+        ),
+    )
+    state_adherence: float | None = Field(
+        default=None,
+        description="4슬롯 모두에 판정어(충족/부분/미충족/분모 제외)가 읽힌 회차의 비율",
+    )
+    score_table_adherence: float | None = Field(
+        default=None,
+        description=(
+            "judge 가 낸 완결성 점수가 **자기 슬롯 판정에 v4 점수표를 적용한 값**과 같은 "
+            "회차의 비율. 판정이 다 읽힌 회차만 분모에 넣는다"
+        ),
+    )
+    slot_state_counts: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="슬롯별 판정 도수. 예: {'3정도': {'partial': 9, 'full': 1}}",
+    )
 
     def gap(self, axis: str) -> float | None:
         """축별 judge 평균 - 사람 점수. 사람 점수가 없으면 None."""

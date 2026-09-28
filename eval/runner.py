@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -39,6 +40,7 @@ import yaml
 
 from eval.analysis import repeat_stats
 from eval.schema import (
+    CompletenessSlots,
     FieldScore,
     GoldenItem,
     ItemScore,
@@ -225,15 +227,65 @@ def compare_ontology(golden: GoldenItem, actual: NewsOntology) -> list[FieldScor
 # ---------------------------------------------------------------------------
 # 축 2. LLM-judge (API 호출)
 # ---------------------------------------------------------------------------
+_SLOTS_PLACEHOLDER = re.compile(r"\{\{\s*completeness_slots\s*\}\}")
+_SLOT_LABELS = {1: "①사건", 2: "②범위", 3: "③정도", 4: "④경위"}
+_ELEMENT_MARKS = "abc"
+
+
+def render_completeness_slots(slots: CompletenessSlots) -> str:
+    """골든셋 슬롯 라벨 -> judge 에게 보여 줄 표 (v4, D-089).
+
+    분모를 **숫자로도** 적는다. judge 는 이 값을 옮겨 적기만 하고, 그 값이 라벨과
+    같은지를 `eval.analysis.stated_denominator` 가 잰다.
+    """
+    lines = [f"분모: {slots.denominator}"]
+    for slot, elements in slots.by_slot().items():
+        if not elements:
+            lines.append(f"- {_SLOT_LABELS[slot]}: 분모 제외 (원문이 이 정보를 주지 않았다)")
+            continue
+        joined = " / ".join(f"({_ELEMENT_MARKS[i]}) {e}" for i, e in enumerate(elements))
+        lines.append(f"- {_SLOT_LABELS[slot]}: {joined}")
+    return "\n".join(lines)
+
+
+def prompt_requires_completeness_slots(prompt: Prompt) -> bool:
+    """루브릭이 `{{completeness_slots}}` 를 받는가. v4 부터 받는다."""
+    return bool(_SLOTS_PLACEHOLDER.search(prompt.system) or _SLOTS_PLACEHOLDER.search(prompt.user))
+
+
+def check_judge_inputs(items: Iterable[GoldenItem], prompt: Prompt) -> None:
+    """judge 호출 **전에** 루브릭이 요구하는 라벨이 전부 있는지 본다.
+
+    `Prompt.render` 는 값이 없는 자리를 '(정보 없음)' 으로 채운다. 슬롯 라벨이 빠진
+    채 v4 를 돌리면 judge 는 "(정보 없음)" 을 받고 **스스로 분모를 정한다** — v4 가
+    없애려던 바로 그 판단이고, 점수는 멀쩡히 나와서 구분할 방법이 없다. 그래서
+    호출 전에 멈춘다.
+    """
+    if not prompt_requires_completeness_slots(prompt):
+        return
+    missing = [item.id for item in items if item.completeness_slots is None]
+    if missing:
+        raise EvalError(
+            f"{prompt.name} 은 골든셋 completeness_slots 라벨을 요구하는데 없는 항목이 있습니다: "
+            f"{', '.join(missing)}. 라벨을 확정하거나 v3 이하 루브릭으로 돌리세요"
+        )
+
+
 def build_judge_variables(golden: GoldenItem, summary: str) -> dict[str, Any]:
     """judge 프롬프트 치환 변수.
 
     `source_text` 는 제목과 본문을 합친 것이다. 판정 근거가 되는 원문이 곧
     골든셋의 `input` 이어야, 나중에 같은 점수를 재현할 수 있다.
+
+    `completeness_slots` 는 라벨이 있을 때만 넣는다. v3 이하 루브릭에는 그 자리가
+    없어 무시된다.
     """
     body = golden.input.body.strip()
     source_text = golden.input.title if not body else f"{golden.input.title}\n\n{body}"
-    return {"source_text": source_text, "summary": summary}
+    variables: dict[str, Any] = {"source_text": source_text, "summary": summary}
+    if golden.completeness_slots is not None:
+        variables["completeness_slots"] = render_completeness_slots(golden.completeness_slots)
+    return variables
 
 
 def judge_summary(
@@ -253,6 +305,7 @@ def judge_summary(
         `(채점 결과, 사용한 프롬프트 파일명, 사용량)`
     """
     prompt = prompt or load_judge_prompt()
+    check_judge_inputs([golden], prompt)
     system, user = prompt.render(**build_judge_variables(golden, summary))
 
     result: StructuredResult[SummaryJudgement] = client.parse_into(
@@ -375,6 +428,9 @@ def evaluate_item(
         judgement=judgement,
         judge_usage=judge_usage,
         human_summary_scores=golden.human_summary_scores,
+        labeled_denominator=(
+            golden.completeness_slots.denominator if golden.completeness_slots else None
+        ),
         metadata=RunMetadata(
             extraction_model=extraction_model,
             extraction_prompt=extraction_prompt,
@@ -615,6 +671,13 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(f"[중단] 루브릭을 읽을 수 없습니다: {exc}", file=sys.stderr)
         return 1
+
+    if judge_prompt is not None:
+        try:
+            check_judge_inputs(golden_items, judge_prompt)
+        except EvalError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
 
     judge_client = judge_client_from_config(config) if args.judge else None
     if judge_client is not None:

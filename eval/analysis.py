@@ -23,6 +23,9 @@ __all__ = [
     "AXES",
     "axis_stats",
     "slot_verdicts",
+    "slot_states",
+    "stated_denominator",
+    "completeness_from_states",
     "repeat_stats",
 ]
 
@@ -99,6 +102,101 @@ def slot_verdicts(rationale: str) -> dict[int, bool | None]:
     return verdicts
 
 
+#: v4 슬롯 판정어 (D-090). **가장 먼저 나오는 판정어**를 그 슬롯의 판정으로 읽는다 —
+#: v4 는 판정어를 콜론 바로 뒤에 쓰게 하고, 그 뒤 요소별 설명에 "없음"·"미충족" 같은
+#: 말이 또 나올 수 있기 때문이다. 대안의 순서가 곧 우선순위다: 같은 위치에서
+#: "부분 충족" 은 `부분` 으로, "미충족" 은 `충족` 보다 먼저 잡힌다.
+_STATE_TOKEN = re.compile(r"분모\s*(?:에서\s*)?제외|부분|미충족|불충족|충족")
+_STATE_OF = {"부분": "partial", "미충족": "none", "불충족": "none", "충족": "full"}
+
+#: 근거에 적힌 분모. v4 는 "분모 4", v3 은 "분모는 4슬롯" 또는 "3/4 슬롯" 으로 쓴다.
+_DENOMINATOR = re.compile(r"분모\s*(?:는|은|가|=|:)?\s*(\d)")
+_RATIO = re.compile(r"\d(?:\.\d)?\s*/\s*(\d)")
+
+#: v4 슬롯 점수 (D-090)
+_STATE_POINTS = {"full": 1.0, "partial": 0.5, "none": 0.0}
+
+
+def _slot_windows(rationale: str) -> dict[int, list[str]]:
+    """슬롯 마커마다 판정 구간을 자른다. `slot_verdicts` 와 같은 경계 규칙이다."""
+    windows: dict[int, list[str]] = {n: [] for n in SLOT_NAMES}
+    hits: list[tuple[int, int]] = []
+    for slot, pattern in _SLOT_MARKERS.items():
+        for match in re.finditer(pattern, rationale):
+            hits.append((match.end(), slot))
+    hits.sort()
+    positions = [pos for pos, _ in hits]
+    for index, (pos, slot) in enumerate(hits):
+        nxt = positions[index + 1] if index + 1 < len(positions) else len(rationale)
+        tally = _TALLY.search(rationale, pos, nxt)
+        end = min(nxt, tally.start() if tally else nxt, pos + _VERDICT_BACKSTOP)
+        windows[slot].append(rationale[pos:end])
+    return windows
+
+
+def slot_states(rationale: str) -> dict[int, str | None]:
+    """완결성 근거에서 슬롯별 **4상태** 판정을 읽는다 (v4, D-090).
+
+    `slot_verdicts` 는 충족/미충족 이분법이라 "부분"을 충족으로 읽는다(부분 문자열에
+    '충족' 이 있다). v3 기록의 재집계 값을 바꾸지 않으려고 그쪽은 그대로 두고 여기를
+    따로 둔다.
+
+    Returns:
+        `{슬롯번호: "full" | "partial" | "none" | "excluded" | None(판정어 없음)}`
+    """
+    states: dict[int, str | None] = {n: None for n in SLOT_NAMES}
+    if not rationale:
+        return states
+    for slot, windows in _slot_windows(rationale).items():
+        for window in windows:
+            match = _STATE_TOKEN.search(window)
+            if match is None:
+                continue
+            token = match.group(0)
+            states[slot] = "excluded" if token.startswith("분모") else _STATE_OF[token]
+            break  # 같은 슬롯이 여러 번 언급되면 판정어가 처음 읽힌 쪽을 남긴다
+    return states
+
+
+def stated_denominator(rationale: str) -> int | None:
+    """근거가 밝힌 분모. 적혀 있지 않으면 None.
+
+    **점수를 다시 계산하려는 것이 아니다.** v3 의 비결정성은 분모에서 났고(D-088),
+    형식 검사(`slot_adherence`)는 그걸 못 잡았다 — 4슬롯을 다 열거한 뒤 하나를
+    뺐기 때문이다. 분모를 따로 읽어야 라벨과 대조할 수 있다.
+    """
+    if not rationale:
+        return None
+    match = _DENOMINATOR.search(rationale)
+    if match:
+        return int(match.group(1))
+    ratios = _RATIO.findall(rationale)
+    return int(ratios[-1]) if ratios else None
+
+
+def completeness_from_states(states: dict[int, str | None]) -> int | None:
+    """슬롯 판정에 v4 점수표를 적용한다 (D-090). 판정이 하나라도 비면 None.
+
+    judge 가 낸 점수와 대조하는 용도다 — 같은 판정에서 다른 점수가 나왔다면
+    "판정이 흔들렸다"가 아니라 **"표를 적용하지 않았다"** 이다.
+    """
+    if any(state is None for state in states.values()):
+        return None
+    if states[1] == "excluded":
+        return None  # ①사건은 분모에서 뺄 수 없다 — 라벨 스키마가 막는 상태다
+    if states[1] == "none":
+        return 1
+    included = [state for state in states.values() if state != "excluded"]
+    ratio = sum(_STATE_POINTS[state] for state in included) / len(included)
+    if ratio >= 1:
+        return 5
+    if ratio >= 0.75:
+        return 4
+    if ratio >= 0.5:
+        return 3
+    return 2
+
+
 def axis_stats(axis: str, scores: Sequence[int]) -> AxisStats | None:
     """한 축의 점수 목록 -> 분포 통계. 표본이 없으면 None."""
     if not scores:
@@ -161,6 +259,31 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
 
     human = next((s.human_summary_scores for s in mine if s.human_summary_scores), None)
 
+    # --- v4 과정 검사. 분모 준수는 라벨이 있으면 **루브릭과 관계없이** 잰다.
+    labeled = next((s.labeled_denominator for s in mine if s.labeled_denominator), None)
+    denominator_adherence: float | None = None
+    state_adherence: float | None = None
+    table_adherence: float | None = None
+    state_counts: dict[str, dict[str, int]] = {}
+    if judged:
+        rationales = [s.judgement.completeness.rationale for s in judged]
+        if labeled is not None:
+            same = sum(1 for r in rationales if stated_denominator(r) == labeled)
+            denominator_adherence = round(same / len(judged), 3)
+        state_rows = [slot_states(r) for r in rationales]
+        complete = [
+            (row, s) for row, s in zip(state_rows, judged) if all(v is not None for v in row.values())
+        ]
+        state_adherence = round(len(complete) / len(judged), 3)
+        if complete:
+            agree = sum(
+                1 for row, s in complete if completeness_from_states(row) == s.judgement.completeness.score
+            )
+            table_adherence = round(agree / len(complete), 3)
+        for slot, name in SLOT_NAMES.items():
+            counter = Counter(row[slot] or "unread" for row in state_rows)
+            state_counts[f"{slot}{name}"] = dict(sorted(counter.items()))
+
     return RepeatStats(
         item_id=item_id,
         judge_prompt=judge_prompt,
@@ -172,4 +295,9 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
         slot_adherence=adherence,
         slot_fill_rate=fill_rate,
         failures=failures,
+        labeled_denominator=labeled,
+        denominator_adherence=denominator_adherence,
+        state_adherence=state_adherence,
+        score_table_adherence=table_adherence,
+        slot_state_counts=state_counts,
     )
