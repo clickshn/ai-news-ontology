@@ -314,6 +314,13 @@ class ItemScore(BaseModel):
             "남긴다 — v3 회차의 분모도 같은 기준으로 대조하기 위해서다 (D-089)"
         ),
     )
+    judge_finish_reasons: list[str | None] = Field(
+        default_factory=list,
+        description=(
+            "judge 응답마다의 finish_reason (재시도 포함, 순서대로). 원본을 내린 실행에서만 "
+            "채운다. `length` 면 모델이 스키마를 못 지킨 것이 아니라 **잘린 것**이다 (D-092)"
+        ),
+    )
     metadata: RunMetadata = Field(default_factory=RunMetadata)
     errors: list[str] = Field(default_factory=list)
 

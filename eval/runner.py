@@ -386,6 +386,98 @@ def judge_client_from_config(config: Mapping[str, Any], **overrides: Any):
 # ---------------------------------------------------------------------------
 # 한 건 채점
 # ---------------------------------------------------------------------------
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """원자적 쓰기. 부분 파일이 남으면 다음에 그걸 원본으로 읽는다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def persist_judge_raw(
+    client: Any, item_id: str, repeat_index: int, raw_dir: Path
+) -> list[str | None]:
+    """judge 응답 원본을 **변환하기 전에** 내린다 (D-052 를 runner 에도, D-092).
+
+    `eval/predict.py: _persist_raw` 와 같은 규칙이다. session-13 에서 v4 judge 가 4회
+    연속 실패했는데 **실패 사유가 하나도 남지 않았다** — 응답은 `last_raw_responses`
+    에만 있었고, 결과 파일은 실행 끝에 한 번에 쓰였다. 중단하자 둘 다 사라졌다.
+
+    응답이 하나도 없으면(전송 실패) 파일을 만들지 않는다 — 빈 파일은 "응답 0건짜리
+    결과"로 읽힌다. 가짜 클라이언트처럼 `last_raw_responses` 가 없으면 아무것도 안 한다.
+
+    Returns:
+        응답마다의 `finish_reason`. `length` 는 모델이 아니라 `max_tokens` 를 잰 것이다.
+    """
+    raws = list(getattr(client, "last_raw_responses", None) or [])
+    if not raws:
+        return []
+    safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in item_id)
+    _atomic_write_json(raw_dir / f"{safe}.r{repeat_index:02d}.json", raws)
+    return [(r.get("choices") or [{}])[0].get("finish_reason") for r in raws if isinstance(r, dict)]
+
+
+def append_score(score: ItemScore, path: Path) -> None:
+    """채점 1회차를 **끝나는 즉시** 결과 파일에 한 줄 붙인다 (D-092).
+
+    끝에 한 번에 쓰면 중단된 실행은 흔적이 없다. 마지막에 `write_scores` 가 같은
+    경로를 원자적으로 다시 써서 summary 줄을 붙인다 — **summary 줄이 없는 파일은
+    중단된 실행**이다.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"type": "item", **score.model_dump(mode="json")}, ensure_ascii=False)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def score_items(
+    golden_items: Sequence[GoldenItem],
+    predictions: Mapping[str, NewsOntology],
+    *,
+    run_id: str,
+    scores_dir: Path,
+    judge_client: LLMClient | None = None,
+    judge_prompt: Prompt | None = None,
+    repeat: int = 1,
+    progress: Any = None,
+) -> list[ItemScore]:
+    """골든셋 × 반복 회차를 채점하며 회차마다 결과를 바로 쓴다.
+
+    judge 를 부르는 실행이면 원본을 `{scores_dir}/raw/judge-{run_id}/` 에 내린다.
+    """
+    scores_dir = Path(scores_dir)
+    path = scores_dir / f"{run_id}.jsonl"
+    raw_dir = scores_dir / "raw" / f"judge-{run_id}" if judge_client is not None else None
+    scores: list[ItemScore] = []
+    for item in golden_items:
+        actual = predictions.get(item.id)
+        if actual is None:
+            print(f"[skip] {item.id}: 예측이 없습니다", file=sys.stderr)
+            continue
+        for index in range(repeat):
+            score = evaluate_item(
+                item,
+                actual,
+                judge_client=judge_client,
+                judge_prompt=judge_prompt,
+                repeat_index=index,
+                raw_dir=raw_dir,
+            )
+            append_score(score, path)
+            scores.append(score)
+            if progress is not None:
+                progress(score, index, repeat)
+    return scores
+
+
 def evaluate_item(
     golden: GoldenItem,
     actual: NewsOntology,
@@ -395,18 +487,24 @@ def evaluate_item(
     extraction_model: str | None = None,
     extraction_prompt: str | None = None,
     repeat_index: int = 0,
+    raw_dir: Path | None = None,
 ) -> ItemScore:
     """골든셋 1건 + 모델 출력 1건 -> 채점 결과.
 
     `judge_client` 가 None 이면 **API 호출 없이** 대조만 한다. judge 호출이
     실패해도 대조 결과는 살린다 — 요약 채점을 못 했다고 필드 정확도까지 잃을
     이유가 없다.
+
+    `raw_dir` 가 있으면 judge 응답 원본을 **성공·실패와 관계없이** 그 아래에 내린다
+    (D-052, D-092). 호출을 `finally` 로 감싸는 것은 `export/replay.py`·`eval/predict.py`
+    와 같은 구조다(D-077) — 어느 경로로 나가든 응답이 있었으면 디스크에 있다.
     """
     field_scores = compare_ontology(golden, actual)
 
     judgement: SummaryJudgement | None = None
     judge_prompt_name: str | None = None
     judge_usage: JudgeUsage | None = None
+    finish_reasons: list[str | None] = []
     errors: list[str] = []
 
     if judge_client is not None:
@@ -416,6 +514,11 @@ def evaluate_item(
             )
         except Exception as exc:
             errors.append(f"judge 실패: {type(exc).__name__}: {exc}")
+            # 실패 행에도 어떤 루브릭으로 불렀는지 남긴다 — 없으면 실패를 루브릭별로 셀 수 없다.
+            judge_prompt_name = judge_prompt.name if judge_prompt else DEFAULT_JUDGE_PROMPT
+        finally:
+            if raw_dir is not None:
+                finish_reasons = persist_judge_raw(judge_client, golden.id, repeat_index, raw_dir)
 
     if judgement is not None and golden.human_summary_scores is None:
         errors.append("사람 점수가 없어 judge 자기 편향을 확인할 수 없다")
@@ -431,6 +534,7 @@ def evaluate_item(
         labeled_denominator=(
             golden.completeness_slots.denominator if golden.completeness_slots else None
         ),
+        judge_finish_reasons=finish_reasons,
         metadata=RunMetadata(
             extraction_model=extraction_model,
             extraction_prompt=extraction_prompt,
@@ -688,28 +792,30 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    scores: list[ItemScore] = []
-    for item in golden_items:
-        actual = predictions.get(item.id)
-        if actual is None:
-            print(f"[skip] {item.id}: 예측이 없습니다", file=sys.stderr)
-            continue
-        for index in range(args.repeat):
-            score = evaluate_item(
-                item,
-                actual,
-                judge_client=judge_client,
-                judge_prompt=judge_prompt,
-                repeat_index=index,
-            )
-            scores.append(score)
-            if judge_client is not None:
-                # 회차마다 즉시 보고한다. N회가 몇 분씩 걸리는데 끝까지 침묵하면
-                # 중간에 실패가 누적돼도 알 수 없다.
-                axis = score.judgement.completeness.score if score.judgement else "실패"
-                print(f"  [{index + 1}/{args.repeat}] {item.id} 완결성={axis}", file=sys.stderr)
+    def report(score: ItemScore, index: int, repeat: int) -> None:
+        # 회차마다 즉시 보고한다. N회가 몇 분씩 걸리는데 끝까지 침묵하면
+        # 중간에 실패가 누적돼도 알 수 없다. 실패면 사유와 finish_reason 까지 찍는다.
+        if judge_client is None:
+            return
+        axis = score.judgement.completeness.score if score.judgement else "실패"
+        tail = ""
+        if score.judgement is None:
+            tail = f" finish={score.judge_finish_reasons} {'; '.join(score.errors)[:200]}"
+        print(f"  [{index + 1}/{repeat}] {score.item_id} 완결성={axis}{tail}", file=sys.stderr)
 
-    summary = summarize(scores, run_id=new_run_id(), thresholds=eval_cfg.get("thresholds") or {})
+    run_id = new_run_id()
+    scores = score_items(
+        golden_items,
+        predictions,
+        run_id=run_id,
+        scores_dir=Path(scores_dir),
+        judge_client=judge_client,
+        judge_prompt=judge_prompt,
+        repeat=args.repeat,
+        progress=report,
+    )
+
+    summary = summarize(scores, run_id=run_id, thresholds=eval_cfg.get("thresholds") or {})
     path = write_scores(scores, summary, scores_dir=scores_dir)
 
     print(json.dumps(summary.model_dump(mode="json"), ensure_ascii=False, indent=2))

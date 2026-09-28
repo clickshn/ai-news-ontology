@@ -108,7 +108,7 @@
 | `data/replays/` | 대조 실행 산출물 — `rows.json`·`summary.json` 과 **`raw/` 아래의 LLM 원본 응답** (D-052) | O (`data/`) |
 | `observability/logs/` | 게이트 스킵 기록, 미등록 기업 큐 | O (`logs/`) |
 | `eval/scores/` | judge 채점 결과, 골든셋 예측(`preds.jsonl`)과 그 메타 | O |
-| `eval/scores/raw/` | 골든셋 재추출의 **LLM 원본 응답** (`eval/predict.py`, D-052) | O |
+| `eval/scores/raw/` | 골든셋 재추출의 **LLM 원본 응답** (`eval/predict.py`, D-052) · `judge-{run_id}/` 아래 **judge 원본 응답**, 실패 회차 포함 (`eval/runner.py`, D-092) | O |
 
 **커밋되지 않는 것과 디스크에 없는 것은 다르다.** 로컬 디스크·백업·화면 공유는
 여전히 노출 경로다.
