@@ -261,9 +261,20 @@ def test_adherence_none_without_labels():
 # ---------------------------------------------------------------------------
 # 4. 루브릭 파일
 # ---------------------------------------------------------------------------
-def test_v3_is_byte_identical_to_session12_baseline():
-    """session-12 기록의 `judge_prompt_sha256`. 바뀌면 v3 대조군이 대조군이 아니다."""
-    assert prompt_sha256("summary_quality.v3.md") == "70d7ed2fa0d235b2"
+def test_v3_is_unchanged_since_session12_baseline():
+    """바뀌면 v3 대조군이 대조군이 아니다.
+
+    ⚠️ session-12 기록의 `judge_prompt_sha256 = 70d7ed2fa0d235b2` 는 **CRLF 로 체크아웃된
+    작업본**의 해시다. `prompt_sha256` 이 원시 바이트를 해시하므로 LF 체크아웃에서는 같은
+    파일이 다른 값을 낸다(모델이 받는 텍스트는 같다 — `read_text` 가 줄바꿈을 정규화한다).
+    그래서 여기서는 줄바꿈을 LF 로 맞춘 내용 해시로 고정한다. 커밋된 blob 의 값이다.
+    """
+    import hashlib
+
+    from eval.runner import JUDGE_PROMPT_DIR
+
+    raw = (JUDGE_PROMPT_DIR / "summary_quality.v3.md").read_bytes().replace(b"\r\n", b"\n")
+    assert hashlib.sha256(raw).hexdigest()[:16] == "670f4eccdad2574a"
 
 
 def test_v4_keeps_faithfulness_and_concision_text_of_v3():
