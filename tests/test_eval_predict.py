@@ -263,5 +263,12 @@ class TestSummarize:
 
     def test_truncation_is_counted_separately_from_schema_failure(self):
         """절단은 **디코딩 설정**(`max_tokens`)이지 모델 능력이 아니다."""
-        summary = summarize([_row(finish_reasons=["length"])])
+        summary = summarize([_row(finish_reasons=["length"], stop_kinds=["truncated"])])
         assert summary["truncated"] == 1
+        assert summary["degenerate"] == 0
+
+    def test_degeneration_is_not_counted_as_truncation(self):
+        """퇴화는 `max_tokens` 를 올려도 풀리지 않는다 — 절단으로 세면 오진한다 (D-093)."""
+        summary = summarize([_row(finish_reasons=["length"], stop_kinds=["degenerate"])])
+        assert summary["degenerate"] == 1
+        assert summary["truncated"] == 0

@@ -46,6 +46,7 @@ from export.store import DEFAULT_STORE_DIR, ExtractionStore, safe_filename
 from extraction.extractor import DEFAULT_PROMPT, build_variables, load_prompt
 from extraction.llm import SchemaMismatchError, client_from_config
 from extraction.schema import NewsOntology
+from extraction.vllm import count_length_stops, stop_kind
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPLAY_DIR = PROJECT_ROOT / "data" / "replays"
@@ -93,7 +94,11 @@ def _persist_raw(client: Any, doc_id: str, out_dir: Path) -> dict[str, Any]:
     # finish_reason 은 "모델이 스키마를 못 지켰다"와 "토큰이 모자라 잘렸다"를
     # 가르는 유일한 신호다. 둘을 같은 실패로 세면 ②의 수치가 디코딩 설정이
     # 아니라 max_tokens 를 재게 된다.
-    return {"finish_reasons": [(r.get("choices") or [{}])[0].get("finish_reason") for r in raws]}
+    # `length` 는 다시 절단/퇴화로 가른다 — 대응이 정반대다 (D-093).
+    return {
+        "finish_reasons": [(r.get("choices") or [{}])[0].get("finish_reason") for r in raws],
+        "stop_kinds": [stop_kind(r) for r in raws],
+    }
 
 
 def replay_one(
@@ -191,7 +196,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "transport_failures": transport_failures,
         "schema_failure_rate": round(schema_failures / measured, 4) if measured else None,
         "retried": sum(1 for row in rows if (row.get("attempts") or 1) > 1),
-        "truncated": sum(1 for row in rows if "length" in (row.get("finish_reasons") or [])),
+        **count_length_stops(rows),
     }
 
 

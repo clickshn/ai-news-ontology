@@ -53,6 +53,7 @@ from extraction.extractor import Prompt, load_prompt
 from extraction.llm import LLMClient, StructuredResult
 from extraction.normalize import normalization_key
 from extraction.schema import NewsOntology
+from extraction.vllm import stop_kind
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JUDGE_PROMPT_DIR = PROJECT_ROOT / "eval" / "judge_prompts"
@@ -402,7 +403,7 @@ def _atomic_write_json(path: Path, data: Any) -> None:
 
 def persist_judge_raw(
     client: Any, item_id: str, repeat_index: int, raw_dir: Path
-) -> list[str | None]:
+) -> tuple[list[str | None], list[str | None]]:
     """judge 응답 원본을 **변환하기 전에** 내린다 (D-052 를 runner 에도, D-092).
 
     `eval/predict.py: _persist_raw` 와 같은 규칙이다. session-13 에서 v4 judge 가 4회
@@ -413,14 +414,16 @@ def persist_judge_raw(
     결과"로 읽힌다. 가짜 클라이언트처럼 `last_raw_responses` 가 없으면 아무것도 안 한다.
 
     Returns:
-        응답마다의 `finish_reason`. `length` 는 모델이 아니라 `max_tokens` 를 잰 것이다.
+        `(finish_reason 목록, stop_kind 목록)`. `stop_kind` 는 `length` 를 절단/퇴화로
+        다시 가른 것이다 (D-093) — 절단은 `max_tokens` 로 풀리고 퇴화는 안 풀린다.
     """
     raws = list(getattr(client, "last_raw_responses", None) or [])
     if not raws:
-        return []
+        return [], []
     safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in item_id)
     _atomic_write_json(raw_dir / f"{safe}.r{repeat_index:02d}.json", raws)
-    return [(r.get("choices") or [{}])[0].get("finish_reason") for r in raws if isinstance(r, dict)]
+    reasons = [(r.get("choices") or [{}])[0].get("finish_reason") for r in raws if isinstance(r, dict)]
+    return reasons, [stop_kind(r) for r in raws]
 
 
 def append_score(score: ItemScore, path: Path) -> None:
@@ -505,6 +508,7 @@ def evaluate_item(
     judge_prompt_name: str | None = None
     judge_usage: JudgeUsage | None = None
     finish_reasons: list[str | None] = []
+    stop_kinds: list[str | None] | None = None
     errors: list[str] = []
 
     if judge_client is not None:
@@ -518,7 +522,9 @@ def evaluate_item(
             judge_prompt_name = judge_prompt.name if judge_prompt else DEFAULT_JUDGE_PROMPT
         finally:
             if raw_dir is not None:
-                finish_reasons = persist_judge_raw(judge_client, golden.id, repeat_index, raw_dir)
+                finish_reasons, stop_kinds = persist_judge_raw(
+                    judge_client, golden.id, repeat_index, raw_dir
+                )
 
     if judgement is not None and golden.human_summary_scores is None:
         errors.append("사람 점수가 없어 judge 자기 편향을 확인할 수 없다")
@@ -535,6 +541,7 @@ def evaluate_item(
             golden.completeness_slots.denominator if golden.completeness_slots else None
         ),
         judge_finish_reasons=finish_reasons,
+        judge_stop_kinds=stop_kinds,
         metadata=RunMetadata(
             extraction_model=extraction_model,
             extraction_prompt=extraction_prompt,
@@ -800,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
         axis = score.judgement.completeness.score if score.judgement else "실패"
         tail = ""
         if score.judgement is None:
-            tail = f" finish={score.judge_finish_reasons} {'; '.join(score.errors)[:200]}"
+            tail = f" finish={score.judge_finish_reasons} kinds={score.judge_stop_kinds} {'; '.join(score.errors)[:200]}"
         print(f"  [{index + 1}/{repeat}] {score.item_id} 완결성={axis}{tail}", file=sys.stderr)
 
     run_id = new_run_id()

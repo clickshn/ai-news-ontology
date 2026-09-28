@@ -88,6 +88,20 @@ def test_raw_is_written_on_failure_with_finish_reasons(golden, ontology, tmp_pat
     assert (tmp_path / f"{golden.id}.r03.json").exists()
 
 
+def test_degenerate_failure_is_classified_and_counted(golden, ontology, tmp_path):
+    """session-13 의 실패 모양 — 공백 루프는 절단이 아니라 퇴화다 (D-093)."""
+    from eval.analysis import repeat_stats
+
+    class Degenerate(RawJudge):
+        def parse_into(self, **kwargs):
+            self.last_raw_responses = [_response('{\n  "faithfulness":' + "\n  " * 500, "length")] * 2
+            raise ValueError("스키마 검증 실패 (2회)")
+
+    score = evaluate_item(golden, ontology, judge_client=Degenerate([]), raw_dir=tmp_path)
+    assert score.judge_stop_kinds == ["degenerate", "degenerate"]
+    assert repeat_stats([score]).length_stops == {"truncated": 0, "degenerate": 1, "length_unclassified": 0}
+
+
 def test_failed_row_records_rubric_name(golden, ontology, tmp_path):
     from eval.runner import load_judge_prompt
 

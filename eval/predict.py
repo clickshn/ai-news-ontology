@@ -60,6 +60,7 @@ from extraction.extractor import (
 )
 from extraction.llm import SchemaMismatchError, client_from_config
 from extraction.schema import NewsOntology
+from extraction.vllm import count_length_stops, stop_kind
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = PROJECT_ROOT / "eval" / "scores" / "preds.jsonl"
@@ -193,7 +194,9 @@ def _persist_raw(client: Any, item_id: str, raw_dir: Path) -> dict[str, Any]:
     return {
         "finish_reasons": [
             (r.get("choices") or [{}])[0].get("finish_reason") for r in raws
-        ]
+        ],
+        # `length` 를 절단/퇴화로 다시 가른다 (D-093).
+        "stop_kinds": [stop_kind(r) for r in raws],
     }
 
 
@@ -282,9 +285,6 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     transport = sum(1 for k in kinds if k == "transport")
     schema = sum(1 for k in kinds if k == "schema")
     measured = len(rows) - transport
-    truncated = sum(
-        1 for r in rows if "length" in (r.get("finish_reasons") or [])
-    )
     return {
         "item_count": len(rows),
         "measured_items": measured,
@@ -292,7 +292,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "schema_failures": schema,
         # 전부 전송 실패면 `0.0` 이 아니라 None 이다 — 0% 는 "다 성공했다"로 읽힌다.
         "schema_failure_rate": (schema / measured) if measured else None,
-        "truncated": truncated,
+        **count_length_stops(rows),
         "retried": sum(max(0, (r.get("attempts") or 1) - 1) for r in rows),
     }
 

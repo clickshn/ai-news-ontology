@@ -17,6 +17,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 
 from eval.schema import AxisStats, ItemScore, RepeatStats
+from extraction.vllm import count_length_stops
 
 __all__ = [
     "SLOT_NAMES",
@@ -300,4 +301,8 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
         state_adherence=state_adherence,
         score_table_adherence=table_adherence,
         slot_state_counts=state_counts,
+        length_stops=count_length_stops(
+            {"stop_kinds": s.judge_stop_kinds, "finish_reasons": s.judge_finish_reasons}
+            for s in mine
+        ),
     )

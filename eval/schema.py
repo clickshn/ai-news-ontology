@@ -321,6 +321,13 @@ class ItemScore(BaseModel):
             "채운다. `length` 면 모델이 스키마를 못 지킨 것이 아니라 **잘린 것**이다 (D-092)"
         ),
     )
+    judge_stop_kinds: list[str | None] | None = Field(
+        default=None,
+        description=(
+            "응답마다 `finish_reason` 을 `length` 만 절단(truncated)/퇴화(degenerate)로 다시 가른 "
+            "값 (D-093). 원본을 내리지 않은 실행에서는 None — 원본 없이 가르지 않는다"
+        ),
+    )
     metadata: RunMetadata = Field(default_factory=RunMetadata)
     errors: list[str] = Field(default_factory=list)
 
@@ -432,6 +439,13 @@ class RepeatStats(BaseModel):
         description=(
             "judge 가 낸 완결성 점수가 **자기 슬롯 판정에 v4 점수표를 적용한 값**과 같은 "
             "회차의 비율. 판정이 다 읽힌 회차만 분모에 넣는다"
+        ),
+    )
+    length_stops: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "`length` 로 끝난 회차를 절단/퇴화/구분 불가로 센 것 (D-093). 절단은 max_tokens 로 "
+            "풀리고 퇴화는 안 풀린다 — 합쳐 세면 오진한다"
         ),
     )
     slot_state_counts: dict[str, dict[str, int]] = Field(

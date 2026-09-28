@@ -76,6 +76,57 @@ MODEL_ENV = "VLLM_MODEL"
 #: 원인이 가려진다 (`AnthropicClient` 의 같은 판단).
 RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
 
+#: 퇴화 판정 창. `length` 로 끝난 응답의 **마지막 이만큼이 전부 공백**이면 퇴화다.
+DEGENERATE_TAIL_CHARS = 200
+
+
+def stop_kind(response: Any) -> str | None:
+    """응답 1개가 왜 끝났는가. `finish_reason` 을 그대로 두되 `length` 를 둘로 가른다 (D-093).
+
+    - ``"truncated"`` — **실제 내용을 쓰다가** 토큰이 다 됐다. `max_tokens` 를 올리면 풀린다.
+    - ``"degenerate"`` — 잘린 지점 직전 `DEGENERATE_TAIL_CHARS` 자가 **전부 공백**이다.
+      JSON 문법은 토큰 사이 공백을 무제한 허용하므로, 강제 디코딩 안에서 모델이 공백만
+      끝없이 낼 수 있다. `max_tokens` 를 올리면 **더 늦게 실패할 뿐**이다.
+
+    대응이 정반대라 한 칸에 세면 오진한다. session-13 의 v4 judge 가 그랬다 —
+    `{"faithfulness":` 뒤에 `"\\n  "` 1,996회로 4000 토큰을 다 썼고, 이전 분류로는
+    "절단"이었다.
+
+    그 밖의 `finish_reason`(`stop` 등)은 그대로 돌려준다. 형식이 아니면 None.
+    """
+    if not isinstance(response, dict):
+        return None
+    choice = (response.get("choices") or [{}])[0] or {}
+    reason = choice.get("finish_reason")
+    if reason != "length":
+        return reason
+    content = (choice.get("message") or {}).get("content") or ""
+    return "degenerate" if not content[-DEGENERATE_TAIL_CHARS:].strip() else "truncated"
+
+
+def count_length_stops(rows: Any) -> dict[str, int]:
+    """행 목록에서 `length` 로 끝난 행을 **절단 / 퇴화 / 구분 불가**로 센다 (D-093).
+
+    `export/replay.py`·`eval/predict.py`·`eval/runner.py` 가 같은 함수를 쓴다 — 한
+    경로에만 넣으면 D-092 와 같은 모양(규칙은 있는데 그 경로에 안 걸림)이 된다.
+
+    `stop_kinds` 가 없는 행(분류 도입 전에 저장된 행)은 `finish_reasons` 에 `length` 가
+    있어도 **절단으로 세지 않고** `length_unclassified` 로 센다. 원본 없이 절단이라고
+    적으면 퇴화였을 수 있는 것을 확정하는 셈이다.
+    """
+    counts = {"truncated": 0, "degenerate": 0, "length_unclassified": 0}
+    for row in rows:
+        kinds = row.get("stop_kinds")
+        if kinds is None:
+            if "length" in (row.get("finish_reasons") or []):
+                counts["length_unclassified"] += 1
+            continue
+        if "degenerate" in kinds:
+            counts["degenerate"] += 1
+        elif "truncated" in kinds:
+            counts["truncated"] += 1
+    return counts
+
 
 class VLLMEndpointError(LLMError):
     """엔드포인트 설정이 없거나 응답이 OpenAI 호환 형식이 아니다."""

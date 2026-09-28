@@ -88,12 +88,17 @@ class TestSummarizeRows:
     def test_retries_and_truncation_are_still_counted(self):
         rows = [
             _row(attempts=2),
-            _row(finish_reasons=["length"]),
+            _row(finish_reasons=["length"], stop_kinds=["truncated"]),
+            _row(finish_reasons=["length", "length"], stop_kinds=["degenerate", "degenerate"]),
+            _row(finish_reasons=["length"]),  # 분류 도입 전에 저장된 행
             TRANSPORT_ROW,  # attempts 도 finish_reasons 도 없다
         ]
         summary = summarize_rows(rows)
         assert summary["retried"] == 1
+        # 절단과 퇴화는 대응이 정반대라 한 칸에 세지 않는다 (D-093).
         assert summary["truncated"] == 1
+        assert summary["degenerate"] == 1
+        assert summary["length_unclassified"] == 1, "원본 없이 절단이라고 확정하지 않는다"
 
 
 # ---------------------------------------------------------------------------
