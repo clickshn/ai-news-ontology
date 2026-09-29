@@ -27,7 +27,17 @@ SkipRecord(url, title, source_name, reason, stage, model, prompt_name, decided_a
 미등록 표기는 계속 나오고, 그중 무엇을 사전에 넣을지는 사람이 정해야 한다.
 
 ```python
-UnknownCompanyRecord(raw_name, source_article, first_seen, occurrence_count)
+UnknownCompanyRecord(raw_name, source_article, first_seen, occurrence_count, conflict, articles)
+```
+
+**사전 보강 기준은 서로 다른 기사 3건이다** (`articles` · `article_count`, D-114).
+`occurrence_count` 는 언급 수라 한 기사 안의 중복·같은 기사 재추출로도 오른다. 1건은
+일회성, 2건은 같은 사건을 두 소스가 다룬 경우일 수 있고, 3건이면 반복 등장하는 이름이다.
+기간은 두지 않는다 — 기준에 닿으면 넣는다. **지금 사전이 푸는 줄은 기록할 때마다 뺀다.**
+
+```
+python -m observability.events queue    # 후보 · 기준 미달 · 지금 풀리는 줄
+python -m observability.events prune    # 지금 풀리는 줄을 뺀다
 ```
 
 기록 지점은 `CompanyRef` validator 가 아니라 **파이프라인**이다. validator 는
@@ -39,10 +49,10 @@ UnknownCompanyRecord(raw_name, source_article, first_seen, occurrence_count)
 | 파일 | 방식 | 이유 |
 |---|---|---|
 | `skips.jsonl` | append-only | **감사 로그.** 한 줄이 한 사건이고 근거 텍스트가 매번 다르다. 표본으로 뽑아 읽는 게 목적이라 사건을 합치면 정보가 사라진다 |
-| `unknown_companies.jsonl` | upsert | **작업 큐.** 이름당 한 줄이고 `occurrence_count` 로 우선순위를 매긴다. 합치는 키는 `normalization_key` — 정규화와 같은 동치 관계라 키가 같으면 사전에 한 줄만 넣어도 둘 다 해결된다 |
+| `unknown_companies.jsonl` | upsert | **작업 큐.** 이름당 한 줄이고 `article_count`(서로 다른 기사 수)로 우선순위를 매긴다. 합치는 키는 `normalization_key` — 정규화와 같은 동치 관계라 키가 같으면 사전에 한 줄만 넣어도 둘 다 해결된다 |
 
 합칠 때는 **첫 등장이 이긴다.** `raw_name`·`source_article`·`first_seen` 은 처음
-본 값을 유지하고 `occurrence_count` 만 늘어난다.
+본 값을 유지하고 `occurrence_count` 는 더하고 `articles` 는 합친다.
 
 ## 켜고 끄기
 

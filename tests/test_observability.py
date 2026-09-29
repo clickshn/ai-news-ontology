@@ -445,7 +445,9 @@ def test_unknown_company_record_round_trips():
 
 def test_unknown_company_record_fields():
     data = unknown("FFmpeg").to_dict()
-    assert set(data) == {"raw_name", "source_article", "first_seen", "occurrence_count"}
+    assert set(data) == {
+        "raw_name", "source_article", "first_seen", "occurrence_count", "article_count", "articles",
+    }
     assert isinstance(data["first_seen"], str)
 
 
@@ -487,7 +489,9 @@ def test_conflict_is_recorded_with_both_candidates(item, conflict_index, capsys)
     assert "괄호 병기 충돌" in capsys.readouterr().err
 
 
-def test_conflict_survives_the_jsonl_round_trip_and_merge(observer):
+def test_conflict_survives_the_jsonl_round_trip_and_merge(observer, conflict_index):
+    # 충돌이 성립하는 사전 아래서 돈다. 실제 사전에는 "구글"이 없어 `딥마인드(구글)` 이
+    # 풀리고, 풀리는 줄은 기록할 때 큐에서 빠진다 (D-114).
     record = UnknownCompanyRecord(raw_name="딥마인드(구글)", source_article="a", conflict=("Google DeepMind", "Google"))
     observer.record_unknown_company(UnknownCompanyRecord(raw_name="딥마인드(구글)", source_article="b"))
     observer.record_unknown_company(record)
@@ -503,3 +507,100 @@ def test_records_without_conflict_keep_the_old_line_shape(observer):
     observer.record_unknown_company(UnknownCompanyRecord(raw_name="FFmpeg", source_article="a"))
     line = json.loads(observer.unknown_companies_path.read_text(encoding="utf-8").splitlines()[0])
     assert "conflict" not in line
+
+
+# ---------------------------------------------------------------------------
+# 9. 사전 보강 기준 — 서로 다른 기사 3건 · 풀리는 줄 정리 (D-114)
+# ---------------------------------------------------------------------------
+from observability.events import ALIAS_CANDIDATE_MIN_ARTICLES  # noqa: E402
+
+
+def test_mentions_in_one_article_are_one_article(observer):
+    """첫 전량 실행의 유일한 2회(`스페이스X`)는 한 기사 안의 중복이었다."""
+    observer.record_unknown_company(unknown("스페이스X", "https://a/1"))
+    observer.record_unknown_company(unknown("스페이스X", "https://a/1"))
+
+    row = next(iter(observer.load_unknown_companies().values()))
+    assert row.occurrence_count == 2 and row.article_count == 1
+
+
+def test_distinct_articles_are_counted_across_writes(observer):
+    for n in (1, 2, 1, 3):
+        observer.record_unknown_company(unknown("Qwen", f"https://a/{n}"))
+
+    row = next(iter(observer.load_unknown_companies().values()))
+    assert row.article_count == 3 and row.articles == ("https://a/1", "https://a/2", "https://a/3")
+    assert row.source_article == "https://a/1"  # 첫 등장이 이긴다
+
+
+def test_candidates_need_three_distinct_articles(observer):
+    """2건은 같은 사건을 두 소스가 다룬 경우일 수 있다 (session-16)."""
+    assert ALIAS_CANDIDATE_MIN_ARTICLES == 3
+    for n in (1, 2):
+        observer.record_unknown_company(unknown("Two", f"https://a/{n}"))
+    for n in (1, 1, 1, 1):
+        observer.record_unknown_company(unknown("Repeated", f"https://a/{n}"))
+    for n in (1, 2, 3):
+        observer.record_unknown_company(unknown("Three", f"https://a/{n}"))
+
+    assert [r.raw_name for r in observer.alias_candidates()] == ["Three"]
+
+
+def test_old_lines_without_articles_count_as_one_article(observer):
+    """`articles` 이전 줄의 언급 수가 몇 기사에서 왔는지는 복원할 수 없다."""
+    observer.unknown_companies_path.parent.mkdir(parents=True, exist_ok=True)
+    observer.unknown_companies_path.write_text(
+        json.dumps({"raw_name": "Qwen", "source_article": "https://a/1", "occurrence_count": 5}) + "\n",
+        encoding="utf-8",
+    )
+    observer.record_unknown_company(unknown("Qwen", "https://a/2"))
+
+    row = next(iter(observer.load_unknown_companies().values()))
+    assert row.occurrence_count == 6 and row.article_count == 2
+
+
+def test_hand_edited_duplicates_merge_their_articles(observer):
+    observer.unknown_companies_path.parent.mkdir(parents=True, exist_ok=True)
+    observer.unknown_companies_path.write_text(
+        json.dumps({"raw_name": "Qwen", "source_article": "https://a/1", "articles": ["https://a/1", "https://a/2"]})
+        + "\n" + json.dumps({"raw_name": "qwen", "source_article": "https://a/3"}) + "\n",
+        encoding="utf-8",
+    )
+    row = next(iter(observer.load_unknown_companies().values()))
+    assert row.article_count == 3
+
+
+def test_names_the_dictionary_now_resolves_leave_the_queue_on_write(observer, conflict_index):
+    """D-109 이후 `엔비디아(NVIDIA)` 가 풀리는데도 큐에 남아 있었다."""
+    observer.unknown_companies_path.parent.mkdir(parents=True, exist_ok=True)
+    observer.unknown_companies_path.write_text(
+        json.dumps({"raw_name": "엔비디아(NVIDIA)", "source_article": "https://a/1"}) + "\n",
+        encoding="utf-8",
+    )
+    observer.record_unknown_company(unknown("FFmpeg"))
+
+    assert [r.raw_name for r in observer.load_unknown_companies().values()] == ["FFmpeg"]
+
+
+def test_prune_removes_resolved_and_keeps_conflicts(observer, conflict_index):
+    observer.unknown_companies_path.parent.mkdir(parents=True, exist_ok=True)
+    observer.unknown_companies_path.write_text(
+        "".join(
+            json.dumps({"raw_name": name, "source_article": "https://a/1"}) + "\n"
+            for name in ("엔비디아(NVIDIA)", "딥마인드(구글)", "FFmpeg")
+        ),
+        encoding="utf-8",
+    )
+
+    removed = observer.prune_resolved()
+
+    assert removed == ["엔비디아(NVIDIA)"]
+    # 충돌은 풀린 것이 아니다 — 사람이 판정할 항목이라 남는다
+    assert [r.raw_name for r in observer.load_unknown_companies().values()] == ["딥마인드(구글)", "FFmpeg"]
+
+
+def test_prune_on_a_clean_queue_does_not_rewrite(observer, conflict_index):
+    observer.record_unknown_company(unknown("FFmpeg"))
+    before = observer.unknown_companies_path.stat().st_mtime_ns
+    assert observer.prune_resolved() == []
+    assert observer.unknown_companies_path.stat().st_mtime_ns == before

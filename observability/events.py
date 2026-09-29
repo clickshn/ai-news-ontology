@@ -18,7 +18,20 @@ D-008 원칙: 관측은 **선택적 의존성**이다. 기록 대상이 설정�
 | 파일 | 방식 | 이유 |
 |---|---|---|
 | `skips.jsonl` | append-only | **감사 로그**. 한 줄이 한 사건이고 근거 텍스트가 매번 다르다. 나중에 표본으로 뽑아 읽는 게 목적이라 사건을 합치면 안 된다 |
-| `unknown_companies.jsonl` | upsert | **작업 큐**. "어떤 이름을 사전에 넣을까"가 목적이라 이름당 한 줄이 자연스럽고, `occurrence_count` 로 정렬해 우선순위를 매긴다 |
+| `unknown_companies.jsonl` | upsert | **작업 큐**. "어떤 이름을 사전에 넣을까"가 목적이라 이름당 한 줄이 자연스럽고, **서로 다른 기사 수**(`article_count`)로 우선순위를 매긴다 |
+
+## 사전 보강 기준 — 서로 다른 기사 3건 (D-114)
+
+`occurrence_count`(언급 수)는 기준이 아니다. 첫 전량 실행의 유일한 2회(`스페이스X`)는
+**한 기사 안의 중복**이었다. 1건은 일회성이고, 2건은 같은 사건을 두 소스가 다룬 경우일 수
+있다(session-16 에서 실제로 봤다). 3건이면 반복 등장하는 이름이다. 기간은 두지 않는다 —
+기준에 닿으면 넣는다.
+
+지금 사전이 푸는 이름은 **기록할 때마다 큐에서 뺀다.** 사전을 보강하거나 규칙(D-109 괄호
+병기)이 바뀐 뒤에도 옛 줄이 남아 있으면 큐가 "넣을 것" 목록이 아니게 된다.
+
+    python -m observability.events queue    # 후보(기사 3건+) · 기준 미달 · 지금 풀리는 줄
+    python -m observability.events prune    # 지금 풀리는 줄을 큐에서 뺀다
 """
 
 from __future__ import annotations
@@ -27,6 +40,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,12 +55,25 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 # 로 순환이 생기지 않는다. **반대 방향(normalize -> observability)은 만들지
 # 않는다** — 만드는 순간 여기가 순환이 된다. 미등록 기업을 normalize 안에서
 # 기록하지 않는 이유는 그 외에도 더 있다(D-035).
-from extraction.normalize import normalization_key
+from extraction.normalize import normalization_key, normalize_company
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOG_DIR = PROJECT_ROOT / "observability" / "logs"
 SKIPS_FILENAME = "skips.jsonl"
 UNKNOWN_COMPANIES_FILENAME = "unknown_companies.jsonl"
+
+#: 사전 보강 후보가 되는 서로 다른 기사 수 (D-114).
+ALIAS_CANDIDATE_MIN_ARTICLES = 3
+
+
+def is_resolved_now(raw_name: str) -> bool:
+    """지금 사전·규칙으로 풀리는가. 충돌(D-109)은 풀린 것이 아니다."""
+    return normalize_company(raw_name).resolved
+
+
+def _union(*groups: Iterable[str]) -> tuple[str, ...]:
+    """순서를 지킨 합집합 — 처음 본 기사가 앞에 온다."""
+    return tuple(dict.fromkeys(a for group in groups for a in group if a))
 
 
 def _utcnow() -> datetime:
@@ -111,6 +138,9 @@ class UnknownCompanyRecord:
 
     합쳐질 때는 **첫 등장이 이긴다** — `raw_name` / `source_article` /
     `first_seen` 은 처음 본 값을 유지하고 `occurrence_count` 만 늘어난다.
+
+    `occurrence_count` 는 **언급 수**다. 한 기사가 같은 이름을 두 번 싣거나 같은 기사를
+    다시 추출해도 오른다. 보강 판단은 `articles`(서로 다른 기사)로 한다 (D-114).
     """
 
     raw_name: str
@@ -120,6 +150,31 @@ class UnknownCompanyRecord:
     # 괄호 병기의 바깥·안쪽이 서로 다른 대표명으로 풀려 미해결로 둔 경우의 두 후보
     # (D-109). 사전 보강이 아니라 **사람이 판정할** 항목이라 따로 보이게 한다.
     conflict: tuple[str, ...] = ()
+    # 이 이름이 나온 서로 다른 기사. 비워 두면 `source_article` 하나로 채운다.
+    articles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # frozen 이라 object.__setattr__. 비교·직렬화가 늘 같은 모양이게 여기서 정한다.
+        object.__setattr__(self, "articles", _union(self.articles or (self.source_article,)))
+
+    @property
+    def article_set(self) -> tuple[str, ...]:
+        return self.articles
+
+    @property
+    def article_count(self) -> int:
+        return len(self.articles)
+
+    def merged(
+        self, other: "UnknownCompanyRecord", *, conflict: tuple[str, ...] | None = None
+    ) -> "UnknownCompanyRecord":
+        """첫 등장이 이긴다 — 언급 수를 더하고 기사를 합친다."""
+        return replace(
+            self,
+            occurrence_count=self.occurrence_count + other.occurrence_count,
+            conflict=self.conflict if conflict is None else conflict,
+            articles=_union(self.article_set, other.article_set),
+        )
 
     @property
     def key(self) -> str:
@@ -132,6 +187,8 @@ class UnknownCompanyRecord:
             "source_article": self.source_article,
             "first_seen": self.first_seen.isoformat(),
             "occurrence_count": self.occurrence_count,
+            "article_count": self.article_count,
+            "articles": list(self.article_set),
             **({"conflict": list(self.conflict)} if self.conflict else {}),
         }
 
@@ -145,6 +202,9 @@ class UnknownCompanyRecord:
             first_seen=_parse_datetime(data.get("first_seen")),
             occurrence_count=int(count) if isinstance(count, (int, float, str)) else 1,
             conflict=tuple(str(c) for c in data.get("conflict") or ()),
+            # `articles` 가 생기기 전의 줄은 `source_article` 하나만 안다. 그때의
+            # `occurrence_count` 가 몇 기사에서 왔는지는 복원할 수 없다 — 1건으로 친다.
+            articles=tuple(str(a) for a in data.get("articles") or ()),
         )
 
 
@@ -260,25 +320,41 @@ class JSONLObserver:
 
     # -- 미등록 기업: upsert ------------------------------------------------
     def record_unknown_company(self, record: UnknownCompanyRecord) -> None:
-        """같은 이름이 이미 있으면 `occurrence_count` 만 올린다.
+        """같은 이름이 이미 있으면 언급 수를 올리고 기사를 합친다.
 
         읽고-고쳐-다시 쓰기라 append 보다 비싸지만, 이 파일은 사람이 보는
         작업 큐이고 규모가 수십 줄이라 비용이 문제가 되지 않는다. 대신 다시
         쓰기는 원자적으로 해서, 중간에 죽어도 큐가 반토막 나지 않게 한다.
+
+        쓰는 김에 **지금 사전이 푸는 줄을 뺀다** (D-114).
         """
         rows = self.load_unknown_companies()
         existing = rows.get(record.key)
         if existing is None:
             rows[record.key] = record
         else:
-            # 첫 등장이 이긴다 — 카운트만 누적한다. 충돌은 기록 시점의 사전에서
-            # 나온 판정이라 최근 것을 쓴다.
-            rows[record.key] = replace(
-                existing,
-                occurrence_count=existing.occurrence_count + record.occurrence_count,
-                conflict=record.conflict or existing.conflict,
-            )
-        self._rewrite(self.unknown_companies_path, [r.to_dict() for r in rows.values()])
+            # 첫 등장이 이긴다. 충돌은 기록 시점의 사전에서 나온 판정이라 최근 것을 쓴다.
+            rows[record.key] = existing.merged(record, conflict=record.conflict or existing.conflict)
+        kept = [r.to_dict() for r in rows.values() if not self.resolves(r.raw_name)]
+        self._rewrite(self.unknown_companies_path, kept)
+
+    def resolves(self, raw_name: str) -> bool:
+        """지금 사전으로 풀리는가. 테스트가 인스턴스 속성으로 갈아 끼운다."""
+        return is_resolved_now(raw_name)
+
+    def prune_resolved(self) -> list[str]:
+        """지금 사전이 푸는 줄을 큐에서 뺀다. 뺀 이름을 돌려준다."""
+        rows = self.load_unknown_companies()
+        removed = [r.raw_name for r in rows.values() if self.resolves(r.raw_name)]
+        if removed:
+            kept = [r.to_dict() for r in rows.values() if not self.resolves(r.raw_name)]
+            self._rewrite(self.unknown_companies_path, kept)
+        return removed
+
+    def alias_candidates(self, min_articles: int = ALIAS_CANDIDATE_MIN_ARTICLES) -> list[UnknownCompanyRecord]:
+        """서로 다른 기사 `min_articles` 건 이상. 기사 수 → 언급 수 순."""
+        rows = [r for r in self.load_unknown_companies().values() if r.article_count >= min_articles]
+        return sorted(rows, key=lambda r: (-r.article_count, -r.occurrence_count))
 
     def load_unknown_companies(self) -> dict[str, UnknownCompanyRecord]:
         """`{정규화키: 레코드}`. 파일에 적힌 순서(=처음 본 순서)를 유지한다."""
@@ -291,14 +367,7 @@ class JSONLObserver:
                 continue
             existing = rows.get(record.key)
             # 손으로 편집해 같은 이름이 두 줄이 됐다면 여기서 합쳐 준다.
-            rows[record.key] = (
-                record
-                if existing is None
-                else replace(
-                    existing,
-                    occurrence_count=existing.occurrence_count + record.occurrence_count,
-                )
-            )
+            rows[record.key] = record if existing is None else existing.merged(record)
         return rows
 
     # -- 파일 입출력 --------------------------------------------------------
@@ -394,6 +463,48 @@ def observer_from_config(
             settings.get("unknown_companies_filename") or UNKNOWN_COMPANIES_FILENAME
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# 큐 보기 · 정리 (D-114)
+# ---------------------------------------------------------------------------
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    from collectors.rss import load_config
+
+    parser = argparse.ArgumentParser(description="미등록 기업 큐 — 사전 보강 후보 보기 · 정리 (D-114)")
+    parser.add_argument("command", choices=("queue", "prune"))
+    args = parser.parse_args(argv)
+    observer = observer_from_config(load_config())
+    if not isinstance(observer, JSONLObserver):
+        print("observability 가 꺼져 있다 — 큐 파일이 없다", file=sys.stderr)
+        return 2
+
+    if args.command == "prune":
+        removed = observer.prune_resolved()
+        print(f"지금 사전이 푸는 줄 {len(removed)}개를 뺐다" + (f": {removed}" if removed else ""))
+        return 0
+
+    rows = sorted(
+        observer.load_unknown_companies().values(), key=lambda r: (-r.article_count, -r.occurrence_count)
+    )
+    resolved = [r.raw_name for r in rows if observer.resolves(r.raw_name)]
+    waiting = [r for r in rows if not observer.resolves(r.raw_name)]
+    candidates = [r for r in waiting if r.article_count >= ALIAS_CANDIDATE_MIN_ARTICLES]
+    print(f"후보 (서로 다른 기사 {ALIAS_CANDIDATE_MIN_ARTICLES}건+): {len(candidates)}")
+    for r in candidates:
+        conflict = f"  충돌 {list(r.conflict)}" if r.conflict else ""
+        print(f"  {r.article_count}기사 · {r.occurrence_count}언급  {r.raw_name}{conflict}")
+    below = [r for r in waiting if r.article_count < ALIAS_CANDIDATE_MIN_ARTICLES]
+    print(f"기준 미달: {len(below)}  " + ", ".join(f"{r.raw_name}({r.article_count})" for r in below))
+    if resolved:
+        print(f"지금 풀리는 줄 (prune 대상): {resolved}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 # TODO(tracing.py): Langfuse 로 게이트 판정을 span 으로 남기는 구현.
