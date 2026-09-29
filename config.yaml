@@ -35,7 +35,7 @@ sources:
     #   NVIDIA Developer           100   164   562   573    0    12  09-28
     #   Microsoft Research          10  4000  4000  4000    0     2  09-28
     #   AI타임스 (gn)               50   478  1457  3406    0    50  09-29
-    #   인공지능신문                50   299   300   300    0    50  09-29
+    #   인공지능신문                50   299   300   300    0    50  09-29   (은퇴, D-107)
     #
     # 발행일 없는 항목: 전 소스 0건. 최댓값 4000 은 수집기의 BODY_MAX_CHARS 에서 잘린 것.
     #
@@ -45,7 +45,7 @@ sources:
     #   Google Research     — 중앙값 19자 (같은 기준)
     #   Mistral AI          — 50건 중 29건 0자
     #   NVIDIA Blog         — 비-AI(게이밍) 혼재. NVIDIA Developer 로 충분
-    #   전자신문 AI         — 250자 잘림, 인공지능신문과 겹침. 게이트 통과율을 본 뒤 재판단
+    #   전자신문 AI         — 보류. 250자 잘림이라 인공지능신문을 뺀 기준(D-107)에 같이 걸린다
     #   Meta AI · ZDNet Korea — 쓸 수 있는 피드 없음 (ZDNet 레거시 경로는 2024-05-10 에 멈춤)
     #   Anthropic           — 공식 피드 없음. 비공식 중계 3종은 모델 출시 글 누락·404 링크·
     #                         제목 오염이 관측돼 넣지 않는다
@@ -100,15 +100,6 @@ sources:
       limits: {gate: 40, extract: 15}   # 하루 신규 약 38건
       max_silence_days: 2
 
-    # 봇 차단은 없었다(2026-09-29, 기본 UA). 발행일이 시간대 없는 KST 다.
-    - name: "인공지능신문"
-      url: "https://www.aitimes.kr/rss/allArticle.xml"
-      tags: ["ko", "media"]
-      body_quality: "truncated"   # 300자에서 잘림
-      limits: {gate: 25, extract: 10}   # 하루 신규 약 19건
-      max_silence_days: 3
-      naive_date_offset: "+09:00"
-
   # 수집을 멈춘 소스. **수집하지 않는다.** 제외는 앞으로만이라(D-105) 이미 들어온
   # 골든셋·노트·보존소 항목은 그대로이고, eval.predict 가 골든셋 URL 의 호스트로 소스
   # 이름을 유도할 때 여기를 본다 — 지우면 GeekNews 골든셋 2건의 재추출이 멈춘다.
@@ -124,6 +115,16 @@ sources:
       tags: ["oss"]
       retired_on: "2026-09-29"
       reason: "50/50건 본문 0자 (D-105)"
+
+    # 소표본(2026-09-29)에서 300자 본문이 추출을 흔들었다: 관련기존기술을 본문 근거
+    # 없이 채움(Liquid Cooling), 같은 사건을 AI타임스(3167자)는 ProductLaunch 로 보는데
+    # Community/Discussion 으로 분류, 562자 소스는 잘림을 유보했는데 300자는 확신 (D-107).
+    - name: "인공지능신문"
+      url: "https://www.aitimes.kr/rss/allArticle.xml"
+      tags: ["ko", "media"]
+      naive_date_offset: "+09:00"
+      retired_on: "2026-09-29"
+      reason: "300자 잘림 본문에서 근거 없는 채움·분류 흔들림 (D-107)"
 
   arxiv:
     # arXiv API 로 최근 N일 논문을 가져올 카테고리
