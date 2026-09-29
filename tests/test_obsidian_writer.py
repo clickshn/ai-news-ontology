@@ -528,3 +528,32 @@ def test_note_is_written_with_lf_newlines(tmp_path, ontology, context):
     """Windows 에서도 LF 로 쓴다 — Vault 가 git 으로 동기화될 때 diff 가 흔들린다."""
     result = write_note(ontology, context, output_dir=tmp_path)
     assert b"\r\n" not in result.path.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# 발행일 (ADR-024)
+#
+# 노트의 시간 정보가 전부 처리일이었다. MSR 「Offloaded inference」는 09-23 발행인데
+# 노트에는 09-29 로만 남았다. 파일명과 `date` 는 그대로 두고 키를 하나 더한다.
+# ---------------------------------------------------------------------------
+def test_published_at_is_the_items_date_not_the_processing_date(ontology, item):
+    ctx = NoteContext(
+        item=item.model_copy(update={"published_at": date(2026, 9, 23)}),
+        processed_at=datetime(2026, 9, 29, 13, 52, 58, tzinfo=timezone.utc),
+    )
+
+    fm = build_frontmatter(ontology, ctx)
+
+    assert fm["published_at"] == "2026-09-23"
+    assert fm["date"] == "2026-09-29"  # 처리일은 그대로 — 파일명의 {date} 와 같다
+    assert list(fm).index("published_at") == list(fm).index("date") + 1
+
+
+def test_missing_published_at_is_an_explicit_null(ontology, item):
+    """키가 없는 노트는 "ADR-024 이전"이다. 발행일을 안 준 피드와 섞이면 안 된다."""
+    ctx = NoteContext(item=item.model_copy(update={"published_at": None}), processed_at=PROCESSED_AT)
+
+    fm = build_frontmatter(ontology, ctx)
+
+    assert "published_at" in fm and fm["published_at"] is None
+    assert "published_at: null" in dump_frontmatter(fm)

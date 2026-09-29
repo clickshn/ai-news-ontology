@@ -40,6 +40,7 @@ IMPACT_KEYS = {"score": "impact_score", "rationale": "impact_rationale"}
 FRONTMATTER_ORDER = [
     "title",
     "date",
+    "published_at",
     "source",
     "source_url",
     "tech_domain",
@@ -79,7 +80,12 @@ def build_frontmatter(ontology: NewsOntology, context: NoteContext) -> dict[str,
 
     data: dict[str, Any] = {
         "title": context.item.title,
+        # `date` 는 처리일이다(파일명의 {date} 와 같다). 발행일은 따로 싣는다 —
+        # 같은 키의 뜻이 노트마다 달라지면 쿼리가 조용히 틀린다 (ADR-024).
         "date": processed_at.date().isoformat(),
+        # UTC 날짜 (ADR-023). 없으면 키를 빼지 않고 null 을 싣는다 — 키가 없는
+        # 노트는 "ADR-024 이전"이라는 뜻으로 남겨 둔다.
+        "published_at": context.item.published_at.isoformat() if context.item.published_at else None,
         "source": context.item.source_name,
         "source_url": str(context.item.url),
         "tech_domain": [d.value for d in ontology.tech_domains],

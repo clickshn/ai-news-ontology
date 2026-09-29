@@ -13,6 +13,7 @@
 ---
 title: 바이브코딩으로 만든 퍼저가 FFmpeg의 0 나누기 버그를 발견
 date: '2026-08-29'
+published_at: '2026-08-29'
 source: GeekNews
 source_url: https://news.hada.io/topic?id=33001
 tech_domain:
@@ -53,6 +54,7 @@ processed_at: '2026-08-29T21:04:29.527274+09:00'
 | 항목 | 선택 | 결정 로그 |
 |---|---|---|
 | frontmatter 키 | **영문**. Dataview 쿼리에서 한글 키는 매번 따옴표가 필요하다 | D-029 (D-003 부분 번복) |
+| `date` vs `published_at` | `date`(와 파일명의 `{date}`)는 **처리일**, `published_at` 은 **발행일(UTC 날짜)**. 발행일이 없으면 `null` 을 명시한다 — 키가 없는 노트는 ADR-024 이전 노트다. 파일명은 기존 노트와 형식을 맞추려고 처리일 그대로 | D-108 / ADR-024 |
 | `영향도` | 중첩 객체가 아니라 `impact_score` + `impact_rationale` 두 키로 편다 | D-007 |
 | `companies` / 위키링크 | **canonical** 을 쓴다. 원문표기로 링크하면 정규화한 것이 그래프에서 도로 갈라진다 | D-030 |
 | 한글 파일명 | 로마자로 옮기지 않는다. 표기법이 여러 개라 실행마다 달라지고 사람이 못 읽는다 | D-031 |
