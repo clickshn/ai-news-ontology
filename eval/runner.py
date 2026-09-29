@@ -39,8 +39,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import yaml
 
 from eval.analysis import repeat_stats
+from eval.completeness import ElementParseError, compute_completeness
 from eval.schema import (
+    CompletenessComputation,
     CompletenessSlots,
+    Criterion,
+    ElementJudgement,
     FieldScore,
     GoldenItem,
     ItemScore,
@@ -60,6 +64,15 @@ JUDGE_PROMPT_DIR = PROJECT_ROOT / "eval" / "judge_prompts"
 DEFAULT_JUDGE_PROMPT = "summary_quality.v3.md"
 DEFAULT_GOLDEN_SET_DIR = PROJECT_ROOT / "eval" / "golden_set"
 DEFAULT_SCORES_DIR = PROJECT_ROOT / "eval" / "scores"
+
+#: 완결성 점수를 **코드가** 계산하는 루브릭 (ADR-021). judge 는 요소 판정만 낸다.
+#:
+#: 프롬프트 내용으로 추론하지 않고 이름으로 명시한다 — 추론 규칙이 틀리면 v5 가 조용히
+#: 코드 계산으로 돌거나 v6 가 judge 점수로 돌고, 두 경우 모두 점수는 멀쩡히 나온다.
+CODE_SCORED_RUBRICS = frozenset({"summary_quality.v6.md"})
+
+#: `prompt_sha256` 의 계산 방식. `RunMetadata.prompt_hash_scheme` 에 함께 남긴다.
+PROMPT_HASH_SCHEME = "lf"
 
 
 class EvalError(Exception):
@@ -289,41 +302,65 @@ def build_judge_variables(golden: GoldenItem, summary: str) -> dict[str, Any]:
     return variables
 
 
+def is_code_scored(prompt: Prompt) -> bool:
+    """이 루브릭의 완결성 점수를 코드가 계산하는가 (ADR-021)."""
+    return prompt.name in CODE_SCORED_RUBRICS
+
+
 def judge_summary(
     golden: GoldenItem,
     summary: str,
     client: LLMClient,
     *,
     prompt: Prompt | None = None,
-) -> tuple[SummaryJudgement, str, JudgeUsage]:
+) -> tuple[SummaryJudgement, str, JudgeUsage, CompletenessComputation | None]:
     """요약 1건을 루브릭으로 채점한다. **실제 API 호출이 일어난다.**
 
     사용량을 함께 돌려주는 이유는 비용이 이 프로젝트의 실질적인 제약이기
     때문이다(D-019). 채점 1회가 얼마였는지 결과에 남지 않으면, eval 을 매
     실행마다 돌릴지 프롬프트 변경 시에만 돌릴지 판단할 근거가 없다.
 
+    **v6 (코드 계산 루브릭)** 은 출력 모델이 `ElementJudgement` 다 — 완결성에 점수 칸이
+    없다. 요소 판정을 라벨과 대조해 읽고(`eval.completeness`), 계산한 점수로
+    `SummaryJudgement` 를 만든다. 요소 판정을 읽지 못하면 `ElementParseError` 를 올린다 —
+    호출은 일어났으므로 원본은 `evaluate_item` 의 `finally` 가 내린다.
+
     Returns:
-        `(채점 결과, 사용한 프롬프트 파일명, 사용량)`
+        `(채점 결과, 사용한 프롬프트 파일명, 사용량, 계산 경로 | None)`.
+        계산 경로는 코드 계산 루브릭일 때만 있다.
     """
     prompt = prompt or load_judge_prompt()
     check_judge_inputs([golden], prompt)
     system, user = prompt.render(**build_judge_variables(golden, summary))
 
-    result: StructuredResult[SummaryJudgement] = client.parse_into(
-        system=system, user=user, output_model=SummaryJudgement
+    code_scored = is_code_scored(prompt)
+    if code_scored and golden.completeness_slots is None:
+        # check_judge_inputs 가 먼저 막지만, v6 는 라벨 없이 점수를 낼 수 없으므로 한 번 더 막는다.
+        raise EvalError(f"{prompt.name} 은 completeness_slots 라벨 없이 점수를 계산할 수 없습니다")
+    output_model = ElementJudgement if code_scored else SummaryJudgement
+    result: StructuredResult[Any] = client.parse_into(
+        system=system, user=user, output_model=output_model
     )
     usage = result.usage
-    return (
-        result.value,
-        prompt.name,
-        JudgeUsage(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            thinking_tokens=usage.thinking_tokens,
-            cache_read_input_tokens=usage.cache_read_input_tokens,
-            latency_s=usage.latency_s,
-        ),
+    judge_usage = JudgeUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        thinking_tokens=usage.thinking_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+        latency_s=usage.latency_s,
     )
+    if not code_scored:
+        return result.value, prompt.name, judge_usage, None
+
+    raw: ElementJudgement = result.value
+    computation = compute_completeness(raw.completeness.rationale, golden.completeness_slots)
+    judgement = SummaryJudgement(
+        faithfulness=raw.faithfulness,
+        completeness=Criterion(rationale=raw.completeness.rationale, score=computation.score),
+        concision=raw.concision,
+        unsupported_claims=raw.unsupported_claims,
+    )
+    return judgement, prompt.name, judge_usage, computation
 
 
 def load_judge_prompt(filename: str = DEFAULT_JUDGE_PROMPT) -> Prompt:
@@ -332,12 +369,23 @@ def load_judge_prompt(filename: str = DEFAULT_JUDGE_PROMPT) -> Prompt:
 
 
 def prompt_sha256(filename: str, *, prompt_dir: Path = JUDGE_PROMPT_DIR) -> str | None:
-    """프롬프트 파일 해시. 파일명만으로는 내용이 바뀐 걸 잡지 못한다."""
+    """프롬프트 파일 해시. 파일명만으로는 내용이 바뀐 걸 잡지 못한다.
+
+    **줄바꿈을 LF 로 맞춘 뒤** 센다 (`PROMPT_HASH_SCHEME = "lf"`, session-14, D-098). 원시
+    바이트를 세던 때는 같은 커밋이 체크아웃 줄바꿈에 따라 다른 값을 냈다 — v3 이 CRLF
+    작업본에서 `70d7…`, LF 에서 `670f…`. 모델이 받는 텍스트는 같다(`read_text` 가 정규화한다).
+    이 해시는 "어떤 프롬프트로 잰 점수인가"를 가리려는 것이므로 모델 입력과 같은 기준으로
+    센다. LF 로 체크아웃된 파일에서는 이전 값과 같다.
+
+    ⚠️ `export/runner.py: prompt_sha256` 은 **바꾸지 않았다.** 그 값은 MARA 출력 계약
+    (§12.2-3)의 provenance 이고, 계약이 먼저 바뀌어야 한다.
+    """
     path = prompt_dir / filename
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        data = path.read_bytes()
     except OSError:
         return None
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()[:16]
 
 
 def judge_client_from_config(config: Mapping[str, Any], **overrides: Any):
@@ -505,6 +553,7 @@ def evaluate_item(
     field_scores = compare_ontology(golden, actual)
 
     judgement: SummaryJudgement | None = None
+    computation: CompletenessComputation | None = None
     judge_prompt_name: str | None = None
     judge_usage: JudgeUsage | None = None
     finish_reasons: list[str | None] = []
@@ -513,9 +562,14 @@ def evaluate_item(
 
     if judge_client is not None:
         try:
-            judgement, judge_prompt_name, judge_usage = judge_summary(
+            judgement, judge_prompt_name, judge_usage, computation = judge_summary(
                 golden, actual.summary, judge_client, prompt=judge_prompt
             )
+        except ElementParseError as exc:
+            # 호출은 성공했고 요소 판정을 못 읽었다. 점수를 **내지 않는다** — 빠진 요소를
+            # `없음` 으로 채우면 형식 실패가 낮은 점수로 둔갑한다 (ADR-021).
+            errors.append(f"judge 실패: 요소 판정 파싱: {exc}")
+            judge_prompt_name = judge_prompt.name if judge_prompt else DEFAULT_JUDGE_PROMPT
         except Exception as exc:
             errors.append(f"judge 실패: {type(exc).__name__}: {exc}")
             # 실패 행에도 어떤 루브릭으로 불렀는지 남긴다 — 없으면 실패를 루브릭별로 셀 수 없다.
@@ -542,6 +596,10 @@ def evaluate_item(
         ),
         judge_finish_reasons=finish_reasons,
         judge_stop_kinds=stop_kinds,
+        completeness_scored_by=(
+            None if judgement is None else ("code" if computation is not None else "judge")
+        ),
+        completeness_computation=computation,
         metadata=RunMetadata(
             extraction_model=extraction_model,
             extraction_prompt=extraction_prompt,
@@ -553,6 +611,7 @@ def evaluate_item(
             judge_model=getattr(judge_client, "model", None) if judge_client else None,
             judge_prompt=judge_prompt_name,
             judge_prompt_sha256=prompt_sha256(judge_prompt_name) if judge_prompt_name else None,
+            prompt_hash_scheme=PROMPT_HASH_SCHEME,
         ),
         errors=errors,
     )
@@ -603,6 +662,11 @@ def summarize(
         notes.append("채점된 항목이 없다 — 골든셋에 confirmed 항목이 있는지 확인할 것")
     if faithfulness is None and scores:
         notes.append("judge 를 돌리지 않아 요약 품질은 판정하지 않았다")
+    if any(s.completeness_scored_by == "code" for s in scores):
+        notes.append(
+            "완결성은 judge 의 요소 판정으로 **코드가 계산한 값**이다 (ADR-021) — "
+            "judge 가 매긴 v5 이하 완결성과 직접 비교하지 않는다"
+        )
     if any(s.human_summary_scores is None for s in scores):
         notes.append("사람 점수가 없는 항목이 있어 judge 자기 편향은 확인되지 않았다")
 
@@ -702,6 +766,23 @@ def load_predictions(path: Path | str) -> dict[str, NewsOntology]:
     return predictions
 
 
+def select_items(items: Sequence[GoldenItem], ids: Sequence[str]) -> list[GoldenItem]:
+    """`--item` 으로 고른 항목만 남긴다. 골든셋 순서를 유지한다 (D-099).
+
+    없는 ID 가 하나라도 있으면 **전부 멈춘다.** 오타 하나가 조용히 빠지면 "3건 중 2건만
+    돌았다"가 결과 파일에서만 드러나고, 그때는 호출이 이미 나간 뒤다.
+    """
+    known = {item.id for item in items}
+    unknown = [i for i in dict.fromkeys(ids) if i not in known]
+    if unknown:
+        raise EvalError(
+            f"골든셋에 없는 항목: {', '.join(unknown)} "
+            f"(confirmed 항목: {', '.join(sorted(known)) or '없음'})"
+        )
+    wanted = set(ids)
+    return [item for item in items if item.id in wanted]
+
+
 def load_config(path: Path | str = PROJECT_ROOT / "config.yaml") -> dict[str, Any]:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
@@ -715,6 +796,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--predictions", required=True, help="모델 출력 JSONL")
     parser.add_argument("--scores-dir", default=None, help="결과를 쓸 디렉터리")
     parser.add_argument("--include-drafts", action="store_true", help="초안도 채점 (권장하지 않음)")
+    parser.add_argument(
+        "--item",
+        action="append",
+        default=None,
+        metavar="ID",
+        help=(
+            "이 골든셋 항목만 채점한다 (여러 번 줄 수 있다). 진단용 — 골든셋 사본 디렉터리로 "
+            "우회하지 않게 한다. 없는 ID 면 호출 전에 멈춘다"
+        ),
+    )
     parser.add_argument(
         "--judge-prompt",
         default=DEFAULT_JUDGE_PROMPT,
@@ -765,6 +856,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if args.item:
+        try:
+            golden_items = select_items(golden_items, args.item)
+        except EvalError as exc:
+            print(f"[중단] {exc}", file=sys.stderr)
+            return 1
 
     if args.repeat < 1:
         print("[중단] --repeat 는 1 이상이어야 합니다", file=sys.stderr)

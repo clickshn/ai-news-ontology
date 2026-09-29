@@ -239,6 +239,50 @@ class SummaryJudgement(BaseModel):
         )
 
 
+class ElementRationale(BaseModel):
+    """v6 완결성 — **요소 판정만** 쓴다. 점수 칸이 없다 (ADR-021).
+
+    점수 칸을 두면 judge 가 점수를 먼저 정하고 요소 판정을 거기에 맞출 여지가 생기고,
+    그 점수를 버린다 해도 "judge 가 낸 점수"가 원본에 남아 어느 쪽이 기록인지 흐려진다.
+    """
+
+    rationale: str = Field(
+        description="한 줄. 슬롯마다 요소 판정(담김/이름만/없음)만 적는다. 줄을 바꾸지 않는다",
+        min_length=5,
+    )
+
+
+class ElementJudgement(BaseModel):
+    """`summary_quality.v6` 의 judge 출력. 완결성만 `SummaryJudgement` 와 다르다.
+
+    **v6 에만 쓴다.** `SummaryJudgement` 를 고치지 않은 이유는 그 스키마가 structured output
+    으로 v3 대조군에도 들어가기 때문이다 — 바꾸면 대조군의 디코딩 제약이 바뀐다 (D-090).
+    """
+
+    faithfulness: Criterion = Field(description="원문에 없는 내용을 지어내지 않았는가")
+    completeness: ElementRationale = Field(description="주어진 핵심 요소가 요약에 들어 있는가 — 요소별 판정만")
+    concision: Criterion = Field(description="분량 안에서 군더더기가 없는가")
+    unsupported_claims: list[str] = Field(
+        default_factory=list,
+        description="원문에서 확인되지 않는 문장을 요약에서 그대로 인용. 없으면 빈 목록",
+    )
+
+
+class CompletenessComputation(BaseModel):
+    """코드가 완결성 점수를 낸 경로 (v6, ADR-021). 행마다 남긴다.
+
+    점수만 남기면 v5 에서처럼 "점수는 맞는데 경로가 다른" 경우를 다시 잴 수 없다.
+    """
+
+    elements: dict[str, dict[str, str]] = Field(
+        description="슬롯 → 요소 → 판정. 예: {'②범위': {'a': '이름만'}}. 분모 제외 슬롯은 없다"
+    )
+    states: dict[str, str] = Field(description="슬롯 → full/partial/none/excluded")
+    points: float = Field(description="분모에 든 슬롯의 점수 합 (full 1 · partial 0.5 · none 0)")
+    denominator: int = Field(description="라벨이 정한 분모")
+    score: Score1to5
+
+
 # ---------------------------------------------------------------------------
 # 채점 결과
 # ---------------------------------------------------------------------------
@@ -278,6 +322,14 @@ class RunMetadata(BaseModel):
     judge_model: str | None = None
     judge_prompt: str | None = None
     judge_prompt_sha256: str | None = None
+    prompt_hash_scheme: str | None = Field(
+        default=None,
+        description=(
+            "위 두 해시의 계산 방식. `lf` = 줄바꿈을 LF 로 맞춘 내용 해시 (session-14 부터). "
+            "**None 이면 그 이전 기록 = 작업본 원시 바이트 해시**라 체크아웃 줄바꿈에 좌우된다 "
+            "(`eval/judge_prompts/README.md` 대응표)"
+        ),
+    )
 
 
 class JudgeUsage(BaseModel):
@@ -327,6 +379,17 @@ class ItemScore(BaseModel):
             "응답마다 `finish_reason` 을 `length` 만 절단(truncated)/퇴화(degenerate)로 다시 가른 "
             "값 (D-093). 원본을 내리지 않은 실행에서는 None — 원본 없이 가르지 않는다"
         ),
+    )
+    completeness_scored_by: Literal["judge", "code"] | None = Field(
+        default=None,
+        description=(
+            "`judgement.completeness.score` 를 누가 냈나. `code` = judge 의 요소 판정으로 코드가 "
+            "계산한 값(v6, ADR-021). `judge` = judge 가 매긴 값(v5 이하). **둘은 직접 비교하지 "
+            "않는다.** judge 를 안 불렀거나 실패했으면 None. 이 필드가 없던 기록은 judge 다"
+        ),
+    )
+    completeness_computation: CompletenessComputation | None = Field(
+        default=None, description="코드 계산 경로. `completeness_scored_by == 'code'` 일 때만"
     )
     metadata: RunMetadata = Field(default_factory=RunMetadata)
     errors: list[str] = Field(default_factory=list)
@@ -463,6 +526,19 @@ class RepeatStats(BaseModel):
     slot_state_counts: dict[str, dict[str, int]] = Field(
         default_factory=dict,
         description="슬롯별 판정 도수. 예: {'3정도': {'partial': 9, 'full': 1}}",
+    )
+    # --- v6 (ADR-021). 코드가 점수를 계산한 행.
+    completeness_scored_by: str | None = Field(
+        default=None,
+        description=(
+            "이 항목의 완결성 점수를 누가 냈나 — `judge` / `code` / `mixed`. `code` 이면 "
+            "`state_adherence`·`score_table_adherence`·`element_slot_consistency`·"
+            "`denominator_adherence` 는 None 이다: 구조상 성립하는 값을 잰 값처럼 적지 않는다"
+        ),
+    )
+    element_parse_failures: int = Field(
+        default=0,
+        description="요소 판정을 읽지 못해 점수를 내지 않은 회차 수 (`failures` 에 포함된다)",
     )
 
     def gap(self, axis: str) -> float | None:

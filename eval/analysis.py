@@ -16,6 +16,7 @@ import statistics
 from collections import Counter
 from collections.abc import Iterable, Sequence
 
+from eval.completeness import completeness_from_states, state_from_elements
 from eval.schema import AxisStats, ItemScore, RepeatStats
 from extraction.vllm import count_length_stops
 
@@ -116,10 +117,6 @@ _STATE_OF = {"부분": "partial", "미충족": "none", "불충족": "none", "충
 _DENOMINATOR = re.compile(r"분모\s*(?:는|은|가|=|:)?\s*(\d)")
 _RATIO = re.compile(r"\d(?:\.\d)?\s*/\s*(\d)")
 
-#: v4 슬롯 점수 (D-090)
-_STATE_POINTS = {"full": 1.0, "partial": 0.5, "none": 0.0}
-
-
 def _slot_windows(rationale: str) -> dict[int, list[str]]:
     """슬롯 마커마다 판정 구간을 자른다. `slot_verdicts` 와 같은 경계 규칙이다."""
     windows: dict[int, list[str]] = {n: [] for n in SLOT_NAMES}
@@ -177,29 +174,6 @@ def stated_denominator(rationale: str) -> int | None:
     return int(ratios[-1]) if ratios else None
 
 
-def completeness_from_states(states: dict[int, str | None]) -> int | None:
-    """슬롯 판정에 v4 점수표를 적용한다 (D-090). 판정이 하나라도 비면 None.
-
-    judge 가 낸 점수와 대조하는 용도다 — 같은 판정에서 다른 점수가 나왔다면
-    "판정이 흔들렸다"가 아니라 **"표를 적용하지 않았다"** 이다.
-    """
-    if any(state is None for state in states.values()):
-        return None
-    if states[1] == "excluded":
-        return None  # ①사건은 분모에서 뺄 수 없다 — 라벨 스키마가 막는 상태다
-    if states[1] == "none":
-        return 1
-    included = [state for state in states.values() if state != "excluded"]
-    ratio = sum(_STATE_POINTS[state] for state in included) / len(included)
-    if ratio >= 1:
-        return 5
-    if ratio >= 0.75:
-        return 4
-    if ratio >= 0.5:
-        return 3
-    return 2
-
-
 #: 요소 판정 (v4/v5 형식: "(a) 담김 / (b) 이름만 / (c) 없음").
 _ELEMENT = re.compile(r"\(([abc])\)\s*(담김|이름만|없음)")
 
@@ -223,18 +197,10 @@ def element_verdicts(rationale: str) -> dict[int, dict[str, str]]:
     return result
 
 
-def state_from_elements(elements: dict[str, str]) -> str | None:
-    """요소 판정에서 규칙대로 슬롯 판정을 낸다 (v4/v5 루브릭의 표).
-
-    전부 담김 = full, 담김이 하나 이상 = partial, 담김이 없음(이름만·없음뿐) = none.
-    요소가 읽히지 않으면 None.
-    """
-    if not elements:
-        return None
-    held = sum(1 for verdict in elements.values() if verdict == "담김")
-    if held == len(elements):
-        return "full"
-    return "partial" if held else "none"
+def _slot_key(label: str) -> str:
+    """'②범위' -> '2범위'. v4/v5 집계의 키 모양과 맞춘다."""
+    number = "①②③④".index(label[0]) + 1
+    return f"{number}{label[1:]}"
 
 
 def axis_stats(axis: str, scores: Sequence[int]) -> AxisStats | None:
@@ -287,15 +253,24 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
     prompts = {s.metadata.judge_prompt for s in judged if s.metadata.judge_prompt}
     judge_prompt = prompts.pop() if len(prompts) == 1 else None
 
+    # 코드가 점수를 낸 행(v6, ADR-021)은 근거에 슬롯 판정어가 없다 — judge 가 쓰지 않는다.
+    # 판정어를 읽는 과정 검사를 그 행에 돌리면 "판정어 0%" 가 나오는데 그건 위반이 아니라
+    # 형식이다. 그래서 과정 검사는 judge 가 점수를 낸 행에만 돌리고, 코드 행은 계산 경로에서 센다.
+    legacy = [s for s in judged if s.completeness_scored_by != "code"]
+    coded = [s for s in judged if s.completeness_scored_by == "code"]
+    scored_by = None
+    if judged:
+        scored_by = "code" if not legacy else ("mixed" if coded else "judge")
+
     adherence: float | None = None
     fill_rate: dict[str, float] = {}
-    if judged:
-        verdict_rows = [slot_verdicts(s.judgement.completeness.rationale) for s in judged]
+    if legacy:
+        verdict_rows = [slot_verdicts(s.judgement.completeness.rationale) for s in legacy]
         full = sum(1 for row in verdict_rows if all(v is not None for v in row.values()))
-        adherence = round(full / len(judged), 3)
+        adherence = round(full / len(legacy), 3)
         for slot, name in SLOT_NAMES.items():
             filled = sum(1 for row in verdict_rows if row[slot] is True)
-            fill_rate[f"{slot}{name}"] = round(filled / len(judged), 3)
+            fill_rate[f"{slot}{name}"] = round(filled / len(legacy), 3)
 
     human = next((s.human_summary_scores for s in mine if s.human_summary_scores), None)
 
@@ -307,16 +282,16 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
     state_counts: dict[str, dict[str, int]] = {}
     element_counts: dict[str, Counter] = {}
     element_consistency: float | None = None
-    if judged:
-        rationales = [s.judgement.completeness.rationale for s in judged]
+    if legacy:
+        rationales = [s.judgement.completeness.rationale for s in legacy]
         if labeled is not None:
             same = sum(1 for r in rationales if stated_denominator(r) == labeled)
-            denominator_adherence = round(same / len(judged), 3)
+            denominator_adherence = round(same / len(legacy), 3)
         state_rows = [slot_states(r) for r in rationales]
         complete = [
-            (row, s) for row, s in zip(state_rows, judged) if all(v is not None for v in row.values())
+            (row, s) for row, s in zip(state_rows, legacy) if all(v is not None for v in row.values())
         ]
-        state_adherence = round(len(complete) / len(judged), 3)
+        state_adherence = round(len(complete) / len(legacy), 3)
         if complete:
             agree = sum(
                 1 for row, s in complete if completeness_from_states(row) == s.judgement.completeness.score
@@ -340,6 +315,24 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
                     element_counts.setdefault(key, Counter())[verdict] += 1
         if checked:
             element_consistency = round(consistent / checked, 3)
+    elif coded:
+        # 코드 계산 행 — 판정 도수를 계산 경로에서 센다. 키 모양은 v4/v5 와 같게 맞춘다.
+        for s in coded:
+            comp = s.completeness_computation
+            if comp is None:
+                continue
+            for label, state in comp.states.items():
+                key = _slot_key(label)
+                state_counts.setdefault(key, {})
+                state_counts[key][state] = state_counts[key].get(state, 0) + 1
+            for label, verdicts in comp.elements.items():
+                for mark, verdict in verdicts.items():
+                    element_counts.setdefault(f"{_slot_key(label)}({mark})", Counter())[verdict] += 1
+        state_counts = {k: dict(sorted(v.items())) for k, v in sorted(state_counts.items())}
+
+    parse_failures = sum(
+        1 for s in mine if s.judgement is None and any("요소 판정 파싱" in e for e in s.errors)
+    )
 
     return RepeatStats(
         item_id=item_id,
@@ -352,6 +345,8 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
         slot_adherence=adherence,
         slot_fill_rate=fill_rate,
         failures=failures,
+        completeness_scored_by=scored_by,
+        element_parse_failures=parse_failures,
         labeled_denominator=labeled,
         denominator_adherence=denominator_adherence,
         state_adherence=state_adherence,

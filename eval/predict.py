@@ -50,7 +50,7 @@ from urllib.parse import urlsplit
 
 from collectors.base import RawItem
 from collectors.rss import load_config, rss_sources
-from eval.runner import DEFAULT_GOLDEN_SET_DIR, load_golden_set, prompt_sha256
+from eval.runner import DEFAULT_GOLDEN_SET_DIR, PROMPT_HASH_SCHEME, load_golden_set, prompt_sha256
 from eval.schema import GoldenItem
 from extraction.extractor import (
     PROMPT_DIR,
@@ -223,6 +223,7 @@ def predict_one(
         "derived_inputs": derived,
         "prompt_name": prompt.name,
         "prompt_sha256": prompt_sha256(prompt.name, prompt_dir=PROMPT_DIR),
+        "prompt_hash_scheme": PROMPT_HASH_SCHEME,  # session-14 부터 LF 정규화 (D-098)
         "model": getattr(client, "model", None),
         "draft_source": golden.draft_source,
         "labeling_guideline": golden.labeling_guideline,
@@ -360,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         "model": getattr(client, "model", None),
         "prompt_name": prompt.name,
         "prompt_sha256": prompt_sha256(prompt.name, prompt_dir=PROMPT_DIR),
+        "prompt_hash_scheme": PROMPT_HASH_SCHEME,  # session-14 부터 LF 정규화 (D-098)
         # 설정에 남아 있지만 vLLM 으로 나가지 않은 벤더 전용 파라미터 (D-080).
         # 알리지 않으면 effort 가 걸린 실행과 안 걸린 실행이 구분되지 않는다.
         "omitted_vendor_params": list(getattr(client, "omitted_vendor_params", ()) or ()),
