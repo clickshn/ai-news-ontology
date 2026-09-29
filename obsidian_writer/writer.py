@@ -20,7 +20,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from extraction.schema import NewsOntology
 from obsidian_writer.mapper import NoteContext, render_note
@@ -187,6 +187,32 @@ def resolve_path(directory: Path, filename: str, *, source_url: str) -> tuple[Pa
     raise WriteError(f"슬러그 충돌을 999회 안에 해소하지 못했습니다: {filename}")
 
 
+def vault_index(directory: Path, *, key: Callable[[str], str]) -> dict[str, Path]:
+    """디렉터리의 노트를 `key(source_url)` → 경로로 색인한다. **날짜와 무관하다.**
+
+    `resolve_path` 는 같은 파일명일 때만 `source_url` 을 비교한다. 파일명에
+    날짜가 들어가므로 다른 날 다시 쓰면 같은 기사를 알아보지 못한다 — 재실행이
+    매일 도는 순간 D-028 의 `skip` 이 같은 날에만 성립하게 된다 (ADR-022).
+    이 색인은 그 빈자리를 메운다.
+
+    `key` 를 호출부가 넘기는 이유: 동일성 규칙(`doc_id`)은 출력 계약의 것이고
+    이 패키지가 계약을 알 필요가 없다. frontmatter 가 없는 노트는 색인에서 빠진다
+    (알려진 한계와 같다). 같은 키가 둘이면 먼저 정렬되는 쪽을 쓴다.
+    """
+    index: dict[str, Path] = {}
+    if not directory.is_dir():
+        return index
+    for path in sorted(directory.glob("*.md")):
+        source_url = _existing_source_url(path)
+        if not source_url:
+            continue
+        try:
+            index.setdefault(key(source_url), path)
+        except ValueError:
+            continue
+    return index
+
+
 # ---------------------------------------------------------------------------
 # 쓰기
 # ---------------------------------------------------------------------------
@@ -245,6 +271,7 @@ def write_note(
     output_dir: Path,
     on_conflict: ConflictPolicy = "skip",
     filename_template: str = "{date}-{source}-{slug}.md",
+    existing_path: Path | None = None,
 ) -> WriteResult:
     """노트 1건을 쓴다.
 
@@ -252,6 +279,8 @@ def write_note(
         output_dir: 노트를 쓸 디렉터리. 없으면 만든다.
         on_conflict: 같은 기사 노트가 이미 있을 때 — `skip`(기본) / `overwrite`.
                      `version` 은 아직 구현하지 않았다.
+        existing_path: 호출부가 이미 찾아 둔 같은 기사 노트(`vault_index`).
+                     주면 파일명 비교 대신 이 경로를 같은 기사로 본다.
     """
     processed_at = context.resolved_processed_at()
     filename = build_filename(
@@ -263,7 +292,10 @@ def write_note(
     source_url = str(context.item.url)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    path, is_same_article = resolve_path(output_dir, filename, source_url=source_url)
+    if existing_path is not None:
+        path, is_same_article = existing_path, True
+    else:
+        path, is_same_article = resolve_path(output_dir, filename, source_url=source_url)
 
     if is_same_article:
         if on_conflict == "skip":

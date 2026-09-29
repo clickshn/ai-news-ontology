@@ -68,6 +68,16 @@ processed_at: '2026-08-29T21:04:29.527274+09:00'
 - YAML 직렬화에 `allow_unicode=True` 필수. 없으면 한글이 `\uXXXX` 로 깨진다.
 - 개행은 LF 로 고정. Vault 를 git 으로 동기화할 때 diff 가 흔들리지 않게.
 
+## 날짜와 무관한 동일성 — `vault_index`
+
+`write_note` 의 충돌 판정은 **같은 파일명**일 때만 `source_url` 을 비교한다. 파일명에
+날짜가 있으므로 다른 날 다시 쓰면 같은 기사를 알아보지 못한다. `pipeline/` 은 실행
+시작 때 `vault_index(dir, key=doc_id_for)` 로 노트를 한 번 색인하고, 이미 있는 기사는
+`write_note` 를 부르지 않는다 (`overwrite` 면 `existing_path` 로 그 경로에 쓴다).
+동일성 규칙(`doc_id`)은 계약의 것이라 `key` 로 받는다 — 이 패키지는 계약을 모른다.
+노트의 `processed_at` 은 보존소의 `extracted_at` 이라 다시 적재해도 같은 파일명이 나온다
+(ADR-022).
+
 ## 알려진 한계
 
 사용자가 노트의 frontmatter 를 통째로 지우면 `source_url` 로 동일성을 판정할 수
