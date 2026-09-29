@@ -1,6 +1,6 @@
 # ADR-025: 매일 자동 실행은 가부 항목을 고정한 상시 승인 기록과 대조해 불일치면 멈추고 알리며, 경고는 사람이 이미 보는 곳(Vault 상태 노트 1개 · SessionStart 훅 · 토스트)으로 보내고, 환경 미준비를 장애와 가른다
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-29
 - **Decision:** 자동 실행(`python -m pipeline scheduled`)은 사람이 6항목에 답해 만든 상시 승인 기록(`.claude/scheduled-run-approved.json`, 14일 만료)과 현재 상태 — provider · 해석된 엔드포인트 URL 해시 · 모델 · 프롬프트 · 소스 집합 · 상한 · 목적지 결정 코드 해시 · 벤더 승인 파일 잔존 — 를 LLM 호출 전에 대조하고, 하나라도 다르면 LLM 0건으로 전 단계를 멈추고 알린다. config 상한은 승인이 아니다. 경고는 구조화 이벤트로 실행 요약과 누적 경보 파일에 남기고 Vault 의 `_pipeline-status.md` **한 파일**, SessionStart 훅, Windows 토스트로 보낸다. 엔드포인트에 TCP 로 닿지 않는 상태는 차단기가 아니라 "환경 미준비"로 가른다
 - **Scope:** `pipeline/` (새 `scheduled` · `approve-schedule` 진입점, 사전 점검, 경보 누적) · `config.yaml` (`schedule` 절) · `.claude/hooks/load-handoff.sh` (경보 요약 주입) · Obsidian Vault (`_pipeline-status.md` 1개) · `docs/governance.md` (자동 실행 절)
@@ -182,7 +182,8 @@ config 상한(ADR-023)으로 `pipeline run` 이 인자 없이 도는 상태가 �
 
 ## Review Trigger
 
-- 이 결정에서 명시된 재검토 조건은 없다. 품질 지표 임계값은 기록 2주 뒤에 정하기로 했다 (Implementation 후속).
+- ⚠️ **실제 자동 실행으로 아직 검증되지 않았다 — 첫 스케줄 실행 후 재확인한다** (사용자, Accepted 조건). Accepted 시점의 검증은 목 기반 테스트와 승인 기록 없이 돌린 실기 스모크(종료 코드 4 경로) 하나뿐이다. 통과 경로(사전 점검 통과 → 준비 확인 → 실행 → 경보 해소)와 환경 미준비 경로는 실기에서 한 번도 돌지 않았다. 첫 스케줄 실행 뒤 상태 노트·상태 파일·토스트·실행 요약을 보고 이 줄을 갱신한다
+- 품질 지표 임계값은 기록 2주 뒤에 정한다 (Implementation 후속)
 
 ## References
 
