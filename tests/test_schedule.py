@@ -403,6 +403,8 @@ def test_without_approval_nothing_runs_and_the_stop_is_visible(world, monkeypatc
     assert "exit_code=4" in status
     summary = json.loads(next(world["paths"].runs_dir.glob("pipeline-*.json")).read_text(encoding="utf-8"))
     assert summary["exit_code"] == 4, "멈춘 실행의 요약이 exit 0 으로 읽히면 안 된다"
+    # 노트 안의 시각이 한 시간대여야 한다 — frontmatter 가 UTC, 본문이 KST 였다 (실기 스모크)
+    assert "updated: 2026-09-30T09:00:00+09:00" in note
 
 
 def test_approved_run_goes_through_and_vault_gets_only_one_extra_file(world):

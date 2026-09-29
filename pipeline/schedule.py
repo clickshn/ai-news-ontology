@@ -47,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from export.exporter import KST
 from export.store import PROJECT_ROOT, ExtractionStore
 from extraction.egress import ExternalVendorCallError
 from extraction.llm import LLMClient, client_from_config, resolved_vllm_endpoint
@@ -316,7 +317,9 @@ def _finish(
     outcome: str,
 ) -> int:
     """경보 누적 → 실행 요약 → 상태 노트 · 상태 파일 · 토스트. 전달 실패는 서로를 막지 않는다."""
-    finished = now()
+    # 사람이 읽는 시각은 전부 KST 로 — 실행 요약의 `started_at` 이 KST 라서, UTC 를 섞으면
+    # 같은 노트 안에서 두 시각이 9시간 어긋나 보인다 (실기 스모크, session-17).
+    finished = now().astimezone(KST)
     state = A.load_state(paths.alerts)
     raised = A.update_state(state, events, run_id=report.run_id, now=finished.isoformat(timespec="seconds"), evaluated=evaluated)
     A.save_state(state, paths.alerts)
