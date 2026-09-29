@@ -441,6 +441,18 @@ class RepeatStats(BaseModel):
             "회차의 비율. 판정이 다 읽힌 회차만 분모에 넣는다"
         ),
     )
+    # --- 사후 추가 관찰 (D-095). 사전 등록 가설 밖이다 — 판정 기준으로 쓰지 않는다.
+    element_slot_consistency: float | None = Field(
+        default=None,
+        description=(
+            "슬롯 판정어가 **자기 요소 판정에서 규칙대로** 나온 (회차, 슬롯) 쌍의 비율. "
+            "요소 판정이 읽히지 않은 슬롯·분모 제외 슬롯은 분모에서 뺀다. 사후 추가 관찰"
+        ),
+    )
+    element_verdict_counts: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="요소별 판정 도수. 예: {'2범위(a)': {'담김': 4, '이름만': 6}}. 사후 추가 관찰",
+    )
     length_stops: dict[str, int] = Field(
         default_factory=dict,
         description=(

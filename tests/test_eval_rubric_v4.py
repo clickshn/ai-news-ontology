@@ -346,3 +346,46 @@ def test_v5_differs_from_v4_only_in_output_format():
 
 def test_v5_requires_slots():
     assert prompt_requires_completeness_slots(load_judge_prompt("summary_quality.v5.md"))
+
+
+# ---------------------------------------------------------------------------
+# 6. 사후 추가 관찰 — 요소 → 슬롯 일관성 (D-095). 사전 등록 가설이 아니다
+# ---------------------------------------------------------------------------
+# v5 형식 확인 소표본(2026-09-29)의 실제 근거. ② 는 요소가 '이름만' 인데 슬롯을 '부분' 으로 썼다.
+F_33001 = (
+    "①사건: 충족 — (a) 담김 | ②범위: 부분 — (a) 이름만 ('.vpk 파일을 여는 애플리케이션'은 "
+    "언급되었으나 구체적 범위가 누락됨) | ③정도: 부분 — (a) 담김 / (b) 없음 / (c) 없음 | "
+    "④경위: 미충족 — (a) 없음 / (b) 없음 → 합계 2 / 분모 4 → 점수 3"
+)
+
+
+def test_element_verdicts_are_read_per_slot():
+    from eval.analysis import element_verdicts
+
+    elements = element_verdicts(F_33001)
+    assert elements[2] == {"a": "이름만"}
+    assert elements[3] == {"a": "담김", "b": "없음", "c": "없음"}
+
+
+@pytest.mark.parametrize(
+    ("elements", "expected"),
+    [
+        ({"a": "담김", "b": "담김"}, "full"),
+        ({"a": "담김", "b": "이름만"}, "partial"),
+        ({"a": "이름만"}, "none"),     # 이름만은 담김이 아니다
+        ({"a": "없음", "b": "이름만"}, "none"),
+        ({}, None),
+    ],
+)
+def test_state_from_elements(elements, expected):
+    from eval.analysis import state_from_elements
+
+    assert state_from_elements(elements) == expected
+
+
+def test_consistency_separates_the_two_failure_modes():
+    """점수표는 따랐는데(1.0) 요소 → 슬롯 판정이 틀린(0.75) 경우를 한 칸에 섞지 않는다."""
+    stats = repeat_stats(_scores([(F_33001, 3)], slots={**SLOTS, "경위": ["a", "b"]}))
+    assert stats.score_table_adherence == 1.0
+    assert stats.element_slot_consistency == 0.75
+    assert stats.element_verdict_counts["2범위(a)"] == {"이름만": 1}

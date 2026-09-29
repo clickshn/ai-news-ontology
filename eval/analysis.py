@@ -27,6 +27,8 @@ __all__ = [
     "slot_states",
     "stated_denominator",
     "completeness_from_states",
+    "element_verdicts",
+    "state_from_elements",
     "repeat_stats",
 ]
 
@@ -198,6 +200,43 @@ def completeness_from_states(states: dict[int, str | None]) -> int | None:
     return 2
 
 
+#: 요소 판정 (v4/v5 형식: "(a) 담김 / (b) 이름만 / (c) 없음").
+_ELEMENT = re.compile(r"\(([abc])\)\s*(담김|이름만|없음)")
+
+
+def element_verdicts(rationale: str) -> dict[int, dict[str, str]]:
+    """슬롯별 요소 판정을 읽는다. `{슬롯번호: {"a": "담김", "b": "없음"}}`.
+
+    **사후 추가 관찰이다 (D-095).** 사전 등록 가설에 없다 — v5 형식 확인 소표본에서
+    judge 가 `부분 — (a) 이름만` 처럼 요소 판정과 어긋나는 슬롯 판정을 쓴 것을 **본 뒤에**
+    만들었다. 없으면 "점수표를 안 따랐다"와 "요소 → 슬롯 판정이 틀렸다"가 한 칸에 섞인다.
+    """
+    result: dict[int, dict[str, str]] = {n: {} for n in SLOT_NAMES}
+    if not rationale:
+        return result
+    for slot, windows in _slot_windows(rationale).items():
+        for window in windows:
+            found = {mark: verdict for mark, verdict in _ELEMENT.findall(window)}
+            if found:
+                result[slot] = found
+                break
+    return result
+
+
+def state_from_elements(elements: dict[str, str]) -> str | None:
+    """요소 판정에서 규칙대로 슬롯 판정을 낸다 (v4/v5 루브릭의 표).
+
+    전부 담김 = full, 담김이 하나 이상 = partial, 담김이 없음(이름만·없음뿐) = none.
+    요소가 읽히지 않으면 None.
+    """
+    if not elements:
+        return None
+    held = sum(1 for verdict in elements.values() if verdict == "담김")
+    if held == len(elements):
+        return "full"
+    return "partial" if held else "none"
+
+
 def axis_stats(axis: str, scores: Sequence[int]) -> AxisStats | None:
     """한 축의 점수 목록 -> 분포 통계. 표본이 없으면 None."""
     if not scores:
@@ -266,6 +305,8 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
     state_adherence: float | None = None
     table_adherence: float | None = None
     state_counts: dict[str, dict[str, int]] = {}
+    element_counts: dict[str, Counter] = {}
+    element_consistency: float | None = None
     if judged:
         rationales = [s.judgement.completeness.rationale for s in judged]
         if labeled is not None:
@@ -284,6 +325,21 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
         for slot, name in SLOT_NAMES.items():
             counter = Counter(row[slot] or "unread" for row in state_rows)
             state_counts[f"{slot}{name}"] = dict(sorted(counter.items()))
+        # 사후 추가 관찰 (D-095) — 슬롯 판정어가 자기 요소 판정에서 규칙대로 나왔는가.
+        element_rows = [element_verdicts(r) for r in rationales]
+        checked = consistent = 0
+        for states, elements in zip(state_rows, element_rows):
+            for slot in SLOT_NAMES:
+                derived = state_from_elements(elements[slot])
+                if states[slot] in (None, "excluded") or derived is None:
+                    continue
+                checked += 1
+                consistent += derived == states[slot]
+                for mark, verdict in elements[slot].items():
+                    key = f"{slot}{SLOT_NAMES[slot]}({mark})"
+                    element_counts.setdefault(key, Counter())[verdict] += 1
+        if checked:
+            element_consistency = round(consistent / checked, 3)
 
     return RepeatStats(
         item_id=item_id,
@@ -301,6 +357,8 @@ def repeat_stats(scores: Iterable[ItemScore], *, item_id: str | None = None) -> 
         state_adherence=state_adherence,
         score_table_adherence=table_adherence,
         slot_state_counts=state_counts,
+        element_slot_consistency=element_consistency,
+        element_verdict_counts={k: dict(sorted(v.items())) for k, v in sorted(element_counts.items())},
         length_stops=count_length_stops(
             {"stop_kinds": s.judge_stop_kinds, "finish_reasons": s.judge_finish_reasons}
             for s in mine
