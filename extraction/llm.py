@@ -531,3 +531,19 @@ def client_from_config(
         kwargs["base_url"] = vllm_cfg["base_url"]
     kwargs.update(overrides)
     return VLLMClient(**kwargs)
+
+
+def resolved_vllm_endpoint(config: dict[str, Any]) -> str:
+    """이 config 로 만든 vLLM 클라이언트가 **실제로 부를** base URL.
+
+    `client_from_config` → `VLLMClient.__init__` 이 고르는 순서를 그대로 따른다:
+    `llm.vllm.base_url` 이 있으면 그것, 없으면 `VLLM_BASE` (OS 환경변수가 `.env` 를
+    이긴다 — `load_env(override=False)`). 상시 승인 대조(ADR-025)가 이 값의 해시를
+    본다. 순서가 갈라지면 대조하는 목적지와 부르는 목적지가 달라지므로
+    `tests/test_schedule.py` 가 둘을 맞대어 본다.
+    """
+    from extraction.vllm import base_url_from_env
+
+    vllm_cfg = ((config or {}).get("llm") or {}).get("vllm") or {}
+    base = vllm_cfg.get("base_url") or base_url_from_env()
+    return str(base).strip().rstrip("/")

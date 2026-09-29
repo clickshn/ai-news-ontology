@@ -296,6 +296,16 @@ class RunReport:
     fetch: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 소스별 수용 창과 완결 여부. 다음 실행의 기준점이 여기서 나온다 (ADR-023).
     window: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 이 실행에 걸린 상한과 그 출처(config | cli). 상시 승인은 "config 상한으로 한 번
+    # 수동 실행했다"를 선행 조건으로 보는데, 그 사실이 여기서만 확인된다 (ADR-025).
+    limits: dict[str, Any] = field(default_factory=dict)
+    # 품질 지표의 입력. 소스별 본문 길이와 이 실행에서 보존한 doc_id (ADR-025 — 기록만).
+    inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    extracted_ids: dict[str, list[str]] = field(default_factory=dict)
+    # 구조화 경보. stderr 는 자동 실행에서 아무도 안 본다 (ADR-025). 채우는 쪽은
+    # pipeline.schedule — `run` 은 비워 둔다.
+    alerts: list[dict[str, Any]] = field(default_factory=list)
+    quality: dict[str, Any] = field(default_factory=dict)
     finished_at: str | None = None
 
     # 소스 단위 실패. `stale_feed` 는 수집은 됐지만 갱신이 멈춘 피드다 (ADR-023).
@@ -349,6 +359,11 @@ class RunReport:
             "load": dict(self.load),
             "stale": self.stale,
             "breaker_tripped": self.breaker_tripped,
+            "limits": self.limits,
+            "inputs": self.inputs,
+            "extracted_ids": self.extracted_ids,
+            "alerts": self.alerts,
+            "quality": self.quality,
             "failures": self.failures,
             "produced": self.produced,
             "exit_code": self.exit_code(),
@@ -398,6 +413,7 @@ def run_llm_stages(
             continue
         items: list[RawItem] = list(fetched.items)
         tally["collected"] = len(items)
+        report.inputs[source_name] = body_stats(items)
         if fetched.status is FetchStatus.EMPTY:
             print(f"[info] {source_name}: 0건 — 피드는 정상이고 항목이 없다", file=sys.stderr)
         _check_silence(config, source_name, items, today=today, tally=tally, report=report)
@@ -516,6 +532,7 @@ def run_llm_stages(
             entry.extract_error = None
             ledger.put(entry)
             tally["extracted"] += 1
+            report.extracted_ids.setdefault(source_name, []).append(doc_id)
             print(f"[ok] {doc_id} -> {path.name}", file=sys.stderr)
 
         if admission is not None:
@@ -524,6 +541,19 @@ def run_llm_stages(
             report.window[source_name] = {**admission.window.summary(), "drained": drained}
 
     report.breaker_tripped = sorted(breaker.tripped)
+
+
+def body_stats(items: Sequence[RawItem]) -> dict[str, Any]:
+    """소스 하나의 본문 길이. 피드가 조용히 본문을 자르기 시작하는 것의 사전 신호다
+    (인공지능신문 300자, D-107). 판정은 하지 않는다 — 기준선을 쌓는 중이다 (ADR-025)."""
+    lengths = sorted(len(item.body or "") for item in items)
+    if not lengths:
+        return {"items": 0, "body_chars_median": None, "body_empty": 0}
+    return {
+        "items": len(lengths),
+        "body_chars_median": lengths[len(lengths) // 2],
+        "body_empty": sum(1 for n in lengths if n == 0),
+    }
 
 
 def _check_silence(
@@ -676,9 +706,18 @@ def run_pipeline(
     extraction_prompt_name: str = DEFAULT_PROMPT,
     gate_prompt_name: str = GATE_PROMPT,
     today: date | None = None,
+    limits_mode: str = "unknown",
+    report: RunReport | None = None,
 ) -> RunReport:
     validate_sources(config, limits.sources)
-    report = new_report()
+    report = report or new_report()
+    report.limits = {
+        "mode": limits_mode,
+        "gate": dict(limits.gate),
+        "extract": dict(limits.extract),
+        "max_gate_calls": limits.max_gate_calls,
+        "max_extractions": limits.max_extractions,
+    }
     try:
         run_llm_stages(
             config,
@@ -815,6 +854,19 @@ def main(argv: list[str] | None = None) -> int:
     p_load.add_argument("--doc-id", nargs="*", default=[])
     p_load.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR))
 
+    p_sched = sub.add_parser(
+        "scheduled", help="매일 자동 실행 — 상시 승인과 대조한 뒤 config 상한으로 돈다 (ADR-025)"
+    )
+    _add_common(p_sched)
+    p_sched.add_argument("--vault-dir", default=None, help="지정하지 않으면 .env 의 OBSIDIAN_VAULT_PATH")
+    p_sched.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR))
+
+    p_approve = sub.add_parser(
+        "approve-schedule", help="상시 승인 기록을 만든다 — 대화형 터미널에서 사람만 (ADR-025)"
+    )
+    _add_common(p_approve)
+    p_approve.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR))
+
     p_release = sub.add_parser("release", help="격리를 푼다 (다음 run 에서 추출을 다시 시도)")
     p_release.add_argument("doc_id", nargs="+")
     p_release.add_argument("--ledger-dir", default=str(DEFAULT_LEDGER_DIR))
@@ -865,7 +917,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "approve-schedule":
+        from pipeline.schedule import Paths, approve_interactive
+
+        return approve_interactive(config, ledger=ledger, store=store, paths=Paths(runs_dir=Path(args.runs_dir)))
+
     output_dir = Path(args.vault_dir) if args.vault_dir else resolve_output_dir(config=config)
+
+    if args.command == "scheduled":
+        from pipeline.schedule import Paths, log_path_for, run_scheduled, tee_output
+
+        runs_dir = Path(args.runs_dir)
+        with tee_output(log_path_for(runs_dir, datetime.now(KST))):
+            return run_scheduled(
+                config, ledger=ledger, store=store, output_dir=output_dir,
+                paths=Paths(runs_dir=runs_dir), observer=observer_from_config(config),
+            )
 
     if args.command == "load":
         report = new_report()
@@ -894,6 +961,7 @@ def main(argv: list[str] | None = None) -> int:
         runs_dir=Path(args.runs_dir),
         observer=observer_from_config(config),
         rewrite_missing=args.rewrite_missing,
+        limits_mode=mode,
     )
     _print_report(report)
     return report.exit_code()
