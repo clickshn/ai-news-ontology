@@ -33,6 +33,7 @@ from extraction.llm import (
     Usage,
     client_from_config,
 )
+from extraction.normalize import normalize_company
 from extraction.schema import NewsOntology, ReleaseType, RelevanceGate, TechDomain
 from observability.events import (
     InMemoryObserver,
@@ -182,8 +183,16 @@ def record_unknown_companies(
     for company in ontology.companies:
         if company.resolved:
             continue
+        # 판정은 결정적이라 다시 계산해도 같다. 충돌 후보는 `CompanyRef` 에 싣지 않는다
+        # — 보존소·export 계약의 모양을 바꾸지 않으려고 (D-109).
+        conflict = normalize_company(company.raw).conflict
+        if conflict:
+            print(
+                f"[warn] 기업명 괄호 병기 충돌: {company.raw!r} → {list(conflict)} (미해결로 둠)",
+                file=sys.stderr,
+            )
         observer.record_unknown_company(
-            UnknownCompanyRecord(raw_name=company.raw, source_article=str(item.url))
+            UnknownCompanyRecord(raw_name=company.raw, source_article=str(item.url), conflict=conflict)
         )
 
 

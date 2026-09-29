@@ -195,3 +195,77 @@ def test_company_ref_does_not_invent_resolution():
     )
     assert company.canonical == "OpenAI Korea"
     assert company.resolved is False
+
+
+# ---------------------------------------------------------------------------
+# 괄호 병기 (D-109)
+#
+# 한국어 매체는 `엔비디아(NVIDIA)` 처럼 표기를 괄호로 병기한다. 원문 전체로 못
+# 찾았을 때만, 끝에 괄호 하나인 형태에서 바깥·안쪽을 둘 다 조회한다. 네 갈래를
+# 전부 고정하고, 적용하지 않는 형태도 고정한다.
+# ---------------------------------------------------------------------------
+PAREN_INDEX = build_alias_index(
+    {
+        "NVIDIA": ["엔비디아"],
+        "Microsoft": ["마이크로소프트", "msft"],
+        "Google DeepMind": ["딥마인드"],
+        "Google": ["구글"],
+        "LG전자": [],
+    }
+)
+
+
+class TestParenthesisedNames:
+    # 갈래 1 — 바깥·안쪽이 같은 대표명
+    @pytest.mark.parametrize("raw", ["엔비디아(NVIDIA)", "NVIDIA(엔비디아)", "엔비디아 (NVIDIA)", "엔비디아（NVIDIA）"])
+    def test_both_sides_agree(self, raw):
+        result = normalize_company(raw, index=PAREN_INDEX)
+        assert (result.canonical, result.resolved, result.conflict) == ("NVIDIA", True, ())
+
+    # 갈래 2 — 한쪽만 등록
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("마이크로소프트(MS)", "Microsoft"),  # 이번 실행의 실제 값. `MS` 는 별칭이 아니다
+            ("Nvidia Corporation(엔비디아)", "NVIDIA"),  # 안쪽만 등록 — 안쪽을 버리면 놓친다
+            ("LG전자(대표이사 류재철)", "LG전자"),  # 설명 괄호는 안쪽 조회가 실패할 뿐이다
+        ],
+    )
+    def test_one_side_registered(self, raw, expected):
+        result = normalize_company(raw, index=PAREN_INDEX)
+        assert (result.canonical, result.resolved, result.conflict) == (expected, True, ())
+
+    # 갈래 3 — 서로 다른 대표명 → 미해결 + 충돌
+    def test_sides_disagree_is_unresolved_with_both_candidates(self):
+        result = normalize_company("딥마인드(구글)", index=PAREN_INDEX)
+        assert result.resolved is False
+        assert result.canonical == "딥마인드(구글)"  # 괄호를 벗긴 표기로 바꾸지 않는다
+        assert result.conflict == ("Google DeepMind", "Google")
+
+    # 갈래 4 — 둘 다 미등록
+    @pytest.mark.parametrize("raw", ["LG전자(대표이사 류재철)", "Lenfest(재단)"])
+    def test_neither_side_registered(self, raw):
+        """LG전자 는 실제 config 에 없다 — 이번 실행에서 미등록으로 남은 모양 그대로다."""
+        result = normalize_company(raw, index=build_alias_index({"NVIDIA": ["엔비디아"]}))
+        assert (result.canonical, result.resolved, result.conflict) == (raw, False, ())
+
+    # 적용하지 않는 형태 — 중간 괄호 · 복수 괄호 · 중첩 괄호
+    @pytest.mark.parametrize(
+        "raw",
+        ["엔비디아(NVIDIA) 코리아", "엔비디아(NVIDIA)(미국)", "엔비디아(NVIDIA(US))", "(엔비디아)", "엔비디아()"],
+    )
+    def test_middle_multiple_or_nested_parentheses_are_left_alone(self, raw):
+        """바깥·안쪽이 등록명이어도 이 모양이면 벗기지 않는다 — 병기 범위의 규칙이 없다."""
+        result = normalize_company(raw, index=PAREN_INDEX)
+        assert (result.canonical, result.resolved) == (raw, False)
+
+    def test_whole_string_match_wins_before_stripping(self):
+        """원문 전체가 등록돼 있으면 괄호 규칙을 타지 않는다."""
+        index = build_alias_index({"Google DeepMind": ["딥마인드(구글)"], "Google": ["구글"]})
+        assert normalize_company("딥마인드(구글)", index=index).canonical == "Google DeepMind"
+
+    def test_raw_is_kept_verbatim_on_the_company_ref(self):
+        """실제 config 로. 보존소·노트의 원문은 괄호째 남는다."""
+        ref = CompanyRef.model_validate({"원문표기": "엔비디아(NVIDIA)", "역할": "발표 주체"})
+        assert ref.raw == "엔비디아(NVIDIA)"
+        assert (ref.canonical, ref.resolved) == ("NVIDIA", True)

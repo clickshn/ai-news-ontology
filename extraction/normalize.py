@@ -17,8 +17,28 @@ D-011 에서 설계했지만 구현이 비어 있던 단계다.
 즉 미탐은 되돌릴 수 있고 오탐은 되돌릴 수 없다. 그래서 정밀도를 재현율보다
 우선한다 (관련성 게이트가 재현율을 우선하는 것과 정반대의 이유로).
 
-흡수하는 차이는 **표기 노이즈**뿐이다: 대소문자, 공백/구분자.
-`Open AI` → `OpenAI` 는 흡수하지만, `OpenAI Korea` 는 별개 엔티티로 남긴다.
+흡수하는 차이는 **표기 노이즈**뿐이다: 대소문자, 공백/구분자, 그리고 **끝에 붙은
+괄호 병기**(`엔비디아(NVIDIA)`, D-109). `Open AI` → `OpenAI` 는 흡수하지만,
+`OpenAI Korea` 는 별개 엔티티로 남긴다.
+
+### 괄호 병기 (D-109)
+
+한국어 매체는 `엔비디아(NVIDIA)` · `마이크로소프트(MS)` 처럼 한 표기에 다른 표기를
+괄호로 붙인다. 괄호를 벗기는 것은 **표기 규칙 제거**이지 유사도 추측이 아니다.
+원문 전체로 못 찾았을 때만, 문자열이 **끝에 괄호 하나**로 끝나면 바깥·안쪽을
+**둘 다** 조회한다.
+
+| 바깥 | 안쪽 | 결과 |
+|---|---|---|
+| A | A | A |
+| A | 미등록 | A (`마이크로소프트(MS)` → Microsoft) |
+| 미등록 | A | A (`NVIDIA(엔비디아)` 도 같은 규칙) |
+| A | B (A≠B) | **미해결** + 충돌 기록 — 추측으로 하나를 고르지 않는다 |
+| 미등록 | 미등록 | 미해결 |
+
+괄호가 중간에 있거나 여러 개면 적용하지 않는다 — 어디까지가 병기인지 규칙이 없다.
+안쪽을 버리지 않는 이유는 안쪽이 등록명인 표기(`NVIDIA(엔비디아)`)가 있어서다.
+`LG전자(대표이사 류재철)` 같은 설명 괄호는 안쪽 조회가 실패할 뿐이다.
 
 ## 순환 참조 주의
 
@@ -45,6 +65,10 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 # 지우기 시작하면 어디까지 지울지의 기준이 사라진다.
 _WS_RE = re.compile(r"[\s ]+")
 
+# 끝에 붙은 괄호 하나: `바깥(안쪽)`. 전각 괄호도 받는다. 바깥·안쪽 어디에도 괄호가
+# 더 있으면 맞지 않는다 — 중간·복수 괄호에는 적용하지 않는다 (D-109).
+_TRAILING_PAREN_RE = re.compile(r"^([^()（）]+?)\s*[(（]([^()（）]+)[)）]\s*$")
+
 
 @dataclass(frozen=True)
 class NormalizedCompany:
@@ -52,6 +76,9 @@ class NormalizedCompany:
 
     canonical: str
     resolved: bool
+    # 괄호 병기의 바깥·안쪽이 **서로 다른** 대표명으로 풀렸다 (D-109). 미해결로 두고
+    # 두 후보를 남긴다 — 기록은 파이프라인 층이 한다(이 모듈은 observability 를 모른다).
+    conflict: tuple[str, ...] = ()
 
 
 def normalization_key(name: str) -> str:
@@ -138,9 +165,19 @@ def normalize_company(
 
     lookup = load_alias_index() if index is None else index
     canonical = lookup.get(normalization_key(raw))
-    if canonical is None:
+    if canonical is not None:
+        return NormalizedCompany(canonical=canonical, resolved=True)
+
+    match = _TRAILING_PAREN_RE.match(raw.strip())
+    if match is None:
         return NormalizedCompany(canonical=raw, resolved=False)
-    return NormalizedCompany(canonical=canonical, resolved=True)
+    found = [lookup.get(normalization_key(part)) for part in match.groups()]
+    candidates = list(dict.fromkeys(c for c in found if c is not None))
+    if len(candidates) == 1:
+        return NormalizedCompany(canonical=candidates[0], resolved=True)
+    # 0개면 둘 다 미등록, 2개면 바깥·안쪽이 다른 기업을 가리킨다. 어느 쪽이든
+    # canonical 은 원문 그대로다 — 괄호를 벗긴 표기로 바꾸지 않는다.
+    return NormalizedCompany(canonical=raw, resolved=False, conflict=tuple(candidates) if len(candidates) > 1 else ())
 
 
 def reset_cache() -> None:

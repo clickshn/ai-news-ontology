@@ -117,6 +117,9 @@ class UnknownCompanyRecord:
     source_article: str
     first_seen: datetime = field(default_factory=_utcnow)
     occurrence_count: int = 1
+    # 괄호 병기의 바깥·안쪽이 서로 다른 대표명으로 풀려 미해결로 둔 경우의 두 후보
+    # (D-109). 사전 보강이 아니라 **사람이 판정할** 항목이라 따로 보이게 한다.
+    conflict: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -129,6 +132,7 @@ class UnknownCompanyRecord:
             "source_article": self.source_article,
             "first_seen": self.first_seen.isoformat(),
             "occurrence_count": self.occurrence_count,
+            **({"conflict": list(self.conflict)} if self.conflict else {}),
         }
 
     @classmethod
@@ -140,6 +144,7 @@ class UnknownCompanyRecord:
             source_article=str(data.get("source_article") or ""),
             first_seen=_parse_datetime(data.get("first_seen")),
             occurrence_count=int(count) if isinstance(count, (int, float, str)) else 1,
+            conflict=tuple(str(c) for c in data.get("conflict") or ()),
         )
 
 
@@ -266,10 +271,12 @@ class JSONLObserver:
         if existing is None:
             rows[record.key] = record
         else:
-            # 첫 등장이 이긴다 — 카운트만 누적한다.
+            # 첫 등장이 이긴다 — 카운트만 누적한다. 충돌은 기록 시점의 사전에서
+            # 나온 판정이라 최근 것을 쓴다.
             rows[record.key] = replace(
                 existing,
                 occurrence_count=existing.occurrence_count + record.occurrence_count,
+                conflict=record.conflict or existing.conflict,
             )
         self._rewrite(self.unknown_companies_path, [r.to_dict() for r in rows.values()])
 

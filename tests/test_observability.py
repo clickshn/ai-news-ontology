@@ -454,3 +454,52 @@ def test_broken_timestamp_falls_back_to_now():
         {"raw_name": "FFmpeg", "source_article": "u", "first_seen": "어제쯤"}
     )
     assert restored.first_seen.tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# 8. 괄호 병기 충돌 (D-109) — 사전 보강 큐에 두 후보가 보인다
+# ---------------------------------------------------------------------------
+CONFLICT_INDEX = {"딥마인드": "Google DeepMind", "구글": "Google", "엔비디아": "NVIDIA", "nvidia": "NVIDIA"}
+
+
+@pytest.fixture
+def conflict_index(monkeypatch):
+    import extraction.normalize as normalize
+
+    monkeypatch.setattr(normalize, "load_alias_index", lambda *a, **k: CONFLICT_INDEX)
+
+
+def test_conflict_is_recorded_with_both_candidates(item, conflict_index, capsys):
+    payload = {
+        **ONTOLOGY_PAYLOAD,
+        "관련기업": [
+            {"원문표기": "딥마인드(구글)", "역할": "발표 주체"},
+            {"원문표기": "엔비디아(NVIDIA)", "역할": "협력사"},  # 풀리므로 기록되지 않는다
+            {"원문표기": "LG전자(대표이사 류재철)", "역할": "협력사"},  # 미등록, 충돌 아님
+        ],
+    }
+    memory = InMemoryObserver()
+
+    record_unknown_companies(NewsOntology.model_validate(payload), item, memory)
+
+    rows = {r.raw_name: r.conflict for r in memory.unknown_companies}
+    assert rows == {"딥마인드(구글)": ("Google DeepMind", "Google"), "LG전자(대표이사 류재철)": ()}
+    assert "괄호 병기 충돌" in capsys.readouterr().err
+
+
+def test_conflict_survives_the_jsonl_round_trip_and_merge(observer):
+    record = UnknownCompanyRecord(raw_name="딥마인드(구글)", source_article="a", conflict=("Google DeepMind", "Google"))
+    observer.record_unknown_company(UnknownCompanyRecord(raw_name="딥마인드(구글)", source_article="b"))
+    observer.record_unknown_company(record)
+
+    row = observer.load_unknown_companies()[record.key]
+
+    assert row.occurrence_count == 2
+    assert row.source_article == "b"  # 첫 등장이 이긴다
+    assert row.conflict == ("Google DeepMind", "Google")  # 충돌은 최근 판정
+
+
+def test_records_without_conflict_keep_the_old_line_shape(observer):
+    observer.record_unknown_company(UnknownCompanyRecord(raw_name="FFmpeg", source_article="a"))
+    line = json.loads(observer.unknown_companies_path.read_text(encoding="utf-8").splitlines()[0])
+    assert "conflict" not in line
