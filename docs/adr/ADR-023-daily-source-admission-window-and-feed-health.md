@@ -1,6 +1,6 @@
 # ADR-023: 매일 실행의 소스 수용은 파이프라인이 발행일 창으로 가르고, 시간대 없는 발행일은 소스별 고정 오프셋으로 읽으며, 실행당 상한과 갱신 멈춤 기준은 config 에 둔다
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-29
 - **Decision:** 원장에 처음 들어오는 항목만 발행일 창(`max(7일, 소스별 마지막 완결 실행 이후 + 1일)`, 상한 14일)으로 거르고, 발행일이 없거나 미래인 항목은 피드 순서로 소스당 5건까지만 받는다. 창은 수집기가 아니라 파이프라인이 적용한다. 시간대 없는 발행일은 소스별 `naive_date_offset` 으로 해석하고 `published_at` 은 UTC 날짜로 통일한다. 소스별 게이트·추출 상한과 `max_silence_days` 를 config 에 두고, CLI 상한을 주면 config 상한 전체를 대체한다
 - **Scope:** `pipeline/runner.py` (창 · 상한 해석 · 갱신 멈춤 판정) · `collectors/rss.py` (시간대 해석) · `config.yaml` (`sources.rss[]` 의 `limits` · `max_silence_days` · `naive_date_offset`, `pipeline.window`) · `data/pipeline/runs/` (창 기록)

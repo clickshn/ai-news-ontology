@@ -6,7 +6,7 @@
 - **테스트:** `.venv/Scripts/python.exe -m pytest tests/ -q` → **854 passed** (782 → +72)
 - **LLM API 호출: 0건.** 공개 피드 GET 과 curl 만 했다 (현재 소스 · 후보 16개 · 공식 Anthropic 페이지 상태 확인)
 - **의존성: 새로 추가 0개.** 시간대 처리에서 `tzdata` 를 피한 것이 의도다 (ADR-023)
-- **ADR-023** (**Proposed** — 사용자가 설계를 승인했으나 ADR 문서 확인은 아직) — `adr-skill:adr-recorder` 로 작성
+- **ADR-023** (**Accepted**, 사용자 확인) — `adr-skill:adr-recorder` 로 작성
 - 결정 로그 **D-103 · D-104 · D-105 · D-106**. D-014 · D-017 은 `번복됨 → D-105`
 
 > **다음 세션이 먼저 읽을 곳:** **§3(첫 실행 전에)**, **§6(결정 대기)**.
@@ -106,7 +106,7 @@ GeekNews 예시: `extract_ontology.v4.md` 는 HTML 주석(변경 이력)에만 �
 
 | 항목 | 내용 |
 |---|---|
-| **ADR-023 확인** | Proposed. 확인되면 Accepted 로 올리고 `feat/source-rework` 를 main 에 ff 병합 |
+| ~~**ADR-023 확인**~~ | ✅ **닫음** — main 에 ff 병합·push 완료, ADR-023 Accepted (사용자 확인, 2026-09-29) |
 | 🔴 **매일 자동 실행 vs 실행 전 승인** | 상한은 config 로 올라갔지만 거버넌스의 승인은 실행마다다. "config 상한 = 상시 승인"으로 읽히면 안 된다. 스케줄링과 함께 정한다 |
 | **새 소스 첫 실행** | §3. 소표본 → 결과 보고 → 본 실행 별도 승인 |
 | **전자신문 AI** | 인공지능신문 게이트 통과율을 본 뒤 재판단 (사용자) |
