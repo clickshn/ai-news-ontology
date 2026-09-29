@@ -57,7 +57,9 @@ sources:
       url: "http://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=20"
       tags: ["paper"]
       body_quality: "full"        # 초록 전문
-      limits: {gate: 20, extract: 10}   # 피드가 한 번에 20건만 준다
+      # 피드가 한 번에 20건만 주고 통과율이 100% 다. 추출 10 이면 절반이 피드 밖으로
+      # 밀려나 확정 손실이었다 (D-112, 2026-09-29 전량 실행)
+      limits: {gate: 20, extract: 20}
       max_silence_days: 5         # 제출일 기준 + 주말
 
     - name: "OpenAI News"
@@ -92,12 +94,15 @@ sources:
 
     # gn 판을 쓴다. 일반 판(/rss/allArticle.xml)은 같은 기사를 300자에서 자르고
     # 발행일에 시간대가 없다. gn 판은 `+0900` 을 준다.
-    # ⚠️ 피드가 최근 50건(약 2~3일치)만 준다 — 3일 넘게 쉬면 그 사이 글은 복구되지 않는다.
+    # ⚠️ 피드가 최근 50건만 준다. 2026-09-29 실측 **약 28시간치**(평일 하루 35~42건) —
+    #    하루를 거르면 그 사이 글은 복구되지 않는다. 미룬 항목도 다음 실행 전에 밀려난다.
     - name: "AI타임스"
       url: "https://cdn.aitimes.com/rss/gn_rss_allArticle.xml"
       tags: ["ko", "media"]
       body_quality: "truncated"   # 중앙값 1457자
-      limits: {gate: 40, extract: 15}   # 하루 신규 약 38건
+      # 게이트 = 피드 깊이(50). 그보다 작으면 미룬 항목이 다음 실행 전에 피드 밖으로
+      # 밀려난다 (D-112). 추출 15 는 손실 규모(evicted_extraction)를 본 뒤 정한다
+      limits: {gate: 50, extract: 15}
       max_silence_days: 2
 
   # 수집을 멈춘 소스. **수집하지 않는다.** 제외는 앞으로만이라(D-105) 이미 들어온
