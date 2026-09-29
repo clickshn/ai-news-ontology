@@ -5,7 +5,7 @@
 | 파일 | 역할 |
 |---|---|
 | `base.py` | `Collector` 프로토콜. `fetch() -> Iterable[RawItem]` |
-| `rss.py` | `config.yaml: sources.rss` 의 피드 수집 (HTTP 는 `urllib`, 파싱은 feedparser) |
+| `rss.py` | `config.yaml: sources.rss` 의 피드 수집 (HTTP 는 `urllib`, 파싱은 feedparser). 결과는 `FeedResult` |
 
 **arXiv 논문도 `rss.py` 가 받는다.** 별도 수집기가 아니라 Atom API 를 피드처럼
 읽는 것이고(`sources.rss` 안에 있다), `sources.arxiv` 라는 설정 키는 없다.
@@ -36,6 +36,30 @@ RSS 공지 피드는 주말·공휴일에 0건이라 API 쿼리를 쓴다 — �
 같은 결함을 갖고 있었고(F13), 전송을 복사하면 위 한계가 두 벌이 된다 (D-072).
 **신원(`user_agent`)만 호출자가 정하고 전송 방식은 하나로 둔다.** 재시도 정책은
 공유하지 않는다 — arXiv 쪽은 rate limit 때문에 판단이 반대로 간다 (D-071).
+
+## 실패 사유를 반환값에 남긴다 (D-103)
+
+`fetch_feed` / `collect_results` 는 `FeedResult` 를 돌려준다 — 항목과 **그 항목 수가
+나온 이유**(`FetchStatus`)를 같이 든다. 정상 0건(`empty`)과 장애(`http_error` ·
+`timeout` · `network_error` · `too_large` · `parse_error` · `no_usable_entries` ·
+`config_error`)가 다른 값이다. 예전 `fetch_source` / `collect` 는 항목만 주는 얇은
+래퍼로 남았고, **거기서는 여전히 둘이 같은 `[]` 로 보인다.** 구분이 필요한 호출자
+(파이프라인)는 `collect_results` 를 쓴다.
+
+`no_usable_entries` 는 엔트리가 있는데 link/title 누락으로 **전부** 버린 경우다. 피드
+형식이 바뀐 신호라 정상 0건으로 세지 않는다.
+
+⚠️ **이것으로 안 잡히는 고장이 있다.** 200 을 계속 주면서 내용이 안 늘어나는 피드
+(운영 중단된 중계, 방치된 레거시 경로)는 `ok` 다. 2026-09-29 실측에서 ZDNet Korea 의
+`NewsSection0020.xml` 이 정확히 그 상태였다 — 200, 30건, 최신 항목 **2024-05-10**.
+
+## `Content-Encoding` 을 푼다 (D-104)
+
+요청하지 않아도 압축해서 보내는 서버가 있다. DeepMind(Google Frontend)는
+`Accept-Encoding` 없이도 캐시 노드에 따라 `content-encoding: gzip` 으로 답했고
+(실측 25회 중 3회), urllib 은 풀지 않아 feedparser 가 "not well-formed" 를 냈다.
+session-15 의 plan 실패 / run 성공 불일치가 이것이다. `gzip` · `deflate` 를 풀고,
+**푼 크기에도** `FEED_MAX_BYTES` 를 건다. 모르는 방식은 `parse_error` 다.
 
 ## 규칙
 - **요약하거나 분류하지 않는다.** LLM 호출은 이 레이어에 없다.

@@ -14,6 +14,7 @@ from datetime import date
 import pytest
 
 from collectors.base import RawItem
+from collectors.rss import FeedResult, FetchStatus
 from export.doc_id import doc_id_for
 from export.store import ExtractionStore
 from extraction.egress import ExternalVendorCallError
@@ -93,12 +94,16 @@ def env(tmp_path, monkeypatch):
     feeds: dict[str, object] = {GEEK: [_item(1), _item(2), _item(3)], OPENAI: [_item(1, OPENAI)]}
 
     def fake_collect(config, *, source_name=None, **kwargs):
+        # 목록이면 정상 수집, FeedResult 면 그대로(실패 사유 지정), 예외면 올린다.
         feed = feeds.get(source_name, [])
         if isinstance(feed, BaseException):
             raise feed
-        return list(feed)
+        if isinstance(feed, FeedResult):
+            return [feed]
+        status = FetchStatus.OK if feed else FetchStatus.EMPTY
+        return [FeedResult(source_name=source_name, status=status, items=tuple(feed))]
 
-    monkeypatch.setattr(pipeline_runner, "collect_feeds", fake_collect)
+    monkeypatch.setattr(pipeline_runner, "collect_feed_results", fake_collect)
 
     state = {
         "feeds": feeds,
@@ -440,6 +445,65 @@ class TestPartialFailure:
         env["feeds"][GEEK] = OSError("down")
         env["feeds"][OPENAI] = OSError("down")
         assert env["run"]().exit_code() == 1
+
+
+# ---------------------------------------------------------------------------
+# 수집 실패 vs 정상 0건 (D-103)
+# ---------------------------------------------------------------------------
+def _failed(status: FetchStatus, detail: str = "x") -> FeedResult:
+    return FeedResult(source_name=GEEK, status=status, detail=detail)
+
+
+class TestFetchFailureIsNotAnEmptyFeed:
+    @pytest.mark.parametrize(
+        "status",
+        [FetchStatus.HTTP_ERROR, FetchStatus.PARSE_ERROR, FetchStatus.TIMEOUT, FetchStatus.NO_USABLE_ENTRIES],
+    )
+    def test_fetch_failure_counts_as_a_source_error(self, env, status):
+        env["feeds"][GEEK] = _failed(status)
+
+        report = env["run"]()
+
+        assert report.sources[GEEK]["source_error"] == 1
+        assert report.fetch[GEEK]["status"] == status.value
+        assert report.exit_code() == 3  # OpenAI 는 흘렀다
+
+    def test_empty_feed_is_not_a_failure(self, env):
+        """arXiv 주말 0건. 예전에는 장애와 같은 모양이었다."""
+        env["feeds"][GEEK] = []
+
+        report = env["run"]()
+
+        assert report.sources[GEEK]["source_error"] == 0
+        assert report.fetch[GEEK]["status"] == "empty"
+        assert report.exit_code() == 0
+
+    def test_one_dead_source_on_a_quiet_day_is_partial_not_total(self, env):
+        """새 글이 없는 날(산출 0) 소스 하나가 죽어도 1 이 아니다 — 다른 소스는 받았다."""
+        env["run"]()  # 첫 실행에서 전부 적재
+        env["feeds"][GEEK] = _failed(FetchStatus.HTTP_ERROR, "HTTP 503")
+
+        report = env["run"]()
+
+        assert report.produced == 0
+        assert report.exit_code() == 3
+
+    def test_nothing_produced_with_a_gate_failure_is_still_1(self, env):
+        """완화는 수집 실패에만 적용된다. LLM 단계가 실패하고 산출 0이면 1 이다."""
+        env["feeds"][GEEK] = [_item(1)]
+        env["feeds"][OPENAI] = []
+        env["gate"].behaviour = lambda title: VLLMEndpointError("down")
+
+        assert env["run"]().exit_code() == 1
+
+    def test_failure_reason_is_in_the_run_summary(self, env):
+        env["feeds"][GEEK] = _failed(FetchStatus.PARSE_ERROR, "파싱 실패 (not well-formed)")
+
+        report = env["run"]()
+
+        saved = json.loads((env["runs"] / f"{report.run_id}.json").read_text(encoding="utf-8"))
+        assert saved["fetch"][GEEK] == {"status": "parse_error", "items": 0, "detail": "파싱 실패 (not well-formed)"}
+        assert saved["fetch"][OPENAI]["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------

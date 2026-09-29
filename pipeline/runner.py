@@ -53,8 +53,8 @@ from pathlib import Path
 from typing import Any
 
 from collectors.base import RawItem
-from collectors.rss import collect as collect_feeds
-from collectors.rss import load_config, rss_sources
+from collectors.rss import FeedResult, FetchStatus, load_config, rss_sources
+from collectors.rss import collect_results as collect_feed_results
 from export.doc_id import doc_id_for
 from export.exporter import KST
 from export.runner import parse_take, prompt_sha256, run_extraction, run_gate
@@ -119,6 +119,26 @@ class Limits:
     def sources(self) -> list[str]:
         """상한이 걸린 소스만 돈다 — 상한 없는 소스를 기본값으로 부르지 않는다."""
         return list(dict.fromkeys([*self.gate, *self.extract]))
+
+
+def fetch_source_result(config: dict[str, Any], source_name: str) -> FeedResult:
+    """소스 하나의 수집 결과. **예외도 실패 사유로 바꿔 돌려준다.**
+
+    collectors 는 자기 실패를 흡수해 `FeedResult` 로 주지만, 여기까지 올라온 예외
+    (설정 형식 오류 등)도 같은 대접을 한다 — 소스 하나가 실행을 죽이지 않게.
+    """
+    try:
+        results = list(collect_feed_results(config, source_name=source_name))
+    except Exception as exc:
+        detail = f"수집 실패 — {_error_text(exc)}"
+        print(f"[fail] {source_name}: {detail}", file=sys.stderr)
+        return FeedResult(source_name=source_name, status=FetchStatus.NETWORK_ERROR, detail=detail)
+    if len(results) != 1:
+        # validate_sources 를 거친 이름이면 0 은 없다. 2 이상은 이름 중복이다.
+        detail = f"config.yaml 에서 이 이름의 소스가 {len(results)}개입니다"
+        print(f"[fail] {source_name}: {detail}", file=sys.stderr)
+        return FeedResult(source_name=source_name, status=FetchStatus.CONFIG_ERROR, detail=detail)
+    return results[0]
 
 
 def validate_sources(config: dict[str, Any], names: Sequence[str]) -> None:
@@ -214,6 +234,9 @@ class RunReport:
     load: Counter = field(default_factory=Counter)
     stale: list[str] = field(default_factory=list)
     breaker_tripped: list[str] = field(default_factory=list)
+    # 소스별 수집 결과와 그 사유 (FeedResult.summary). "장애로 0건"과 "정상 0건"을
+    # 실행 요약에서 가를 수 있어야 한다 (D-103).
+    fetch: dict[str, dict[str, Any]] = field(default_factory=dict)
     finished_at: str | None = None
 
     FAILURE_KEYS = ("source_error", "gate_error", "extract_schema_failed", "extract_transport_error")
@@ -227,11 +250,26 @@ class RunReport:
     def produced(self) -> int:
         return sum(t["extracted"] for t in self.sources.values()) + self.load["written"]
 
+    @property
+    def healthy_sources(self) -> int:
+        """수집이 실패하지 않은 소스 수 (정상 0건 포함)."""
+        return sum(1 for f in self.fetch.values() if f.get("status") in ("ok", "empty"))
+
     def exit_code(self) -> int:
-        """0 = 실패 없음 · 3 = 부분 실패 · 1 = 실패만 있고 산출 0건."""
+        """0 = 실패 없음 · 3 = 부분 실패 · 1 = 실행이 제 역할을 못 했다.
+
+        **수집 실패만 있고 다른 소스가 정상으로 받았다면 산출이 0건이어도 3이다**
+        (D-103). 새 글이 없는 날 소스 하나가 죽으면 산출 0이 흔하다. 그걸 1 로
+        내면 "소스 하나 장애"와 "전부 장애"가 같은 코드가 된다 — 이번에 가르려는
+        혼동을 종료 코드에서 다시 만드는 셈이다. 1 은 모든 소스가 죽었거나, LLM·적재
+        단계가 실패했는데 아무것도 못 만든 경우다.
+        """
         if self.failures == 0:
             return 0
-        return 3 if self.produced else 1
+        if self.produced:
+            return 3
+        source_only = self.failures == sum(t["source_error"] for t in self.sources.values())
+        return 3 if source_only and self.healthy_sources else 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -239,6 +277,7 @@ class RunReport:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "sources": {name: dict(t) for name, t in self.sources.items()},
+            "fetch": self.fetch,
             "load": dict(self.load),
             "stale": self.stale,
             "breaker_tripped": self.breaker_tripped,
@@ -278,17 +317,17 @@ def run_llm_stages(
         gate_limit = limits.gate.get(source_name, 0)
         extract_limit = limits.extract.get(source_name, 0)
 
-        # 소스 하나가 죽어도 나머지는 흐른다. collectors 는 자기 실패를 이미
-        # 삼키고 로그를 남기지만, 여기까지 올라온 예외도 같은 대접을 한다.
-        try:
-            items: list[RawItem] = list(collect_feeds(config, source_name=source_name))
-        except Exception as exc:
-            print(f"[fail] {source_name}: 수집 실패 — {_error_text(exc)}", file=sys.stderr)
+        # 소스 하나가 죽어도 나머지는 흐른다. 수집 실패는 `source_error` 로 세고
+        # 다음 소스로 간다 — 흐름은 멈추지 않고, 종료 코드는 부분 실패(3)가 된다.
+        fetched = fetch_source_result(config, source_name)
+        report.fetch[source_name] = fetched.summary()
+        if fetched.failed:
             tally["source_error"] += 1
             continue
+        items: list[RawItem] = list(fetched.items)
         tally["collected"] = len(items)
-        if not items:
-            print(f"[warn] {source_name}: 0건 (피드가 비었거나 수집 실패 — 위 로그 참고)", file=sys.stderr)
+        if fetched.status is FetchStatus.EMPTY:
+            print(f"[info] {source_name}: 0건 — 피드는 정상이고 항목이 없다", file=sys.stderr)
 
         for item in items:
             doc_id = doc_id_for(str(item.url))
@@ -558,18 +597,25 @@ def plan(
     out: dict[str, dict[str, Any]] = {}
     for source_name in limits.sources:
         states = Counter()
-        for item in collect_feeds(config, source_name=source_name):
+        fetched = fetch_source_result(config, source_name)
+        for item in fetched.items:
             doc_id = doc_id_for(str(item.url))
             states[classify(ledger.get(doc_id), stored=store.path_for(doc_id).exists(), gate_key=gate_key)] += 1
         gate_max = min(states[NEEDS_GATE], limits.gate.get(source_name, 0))
         extract_max = min(states[NEEDS_EXTRACTION] + gate_max, limits.extract.get(source_name, 0))
-        out[source_name] = {"states": dict(states), "gate_calls_max": gate_max, "extract_calls_max": extract_max}
+        out[source_name] = {
+            "fetch": fetched.summary(),
+            "states": dict(states),
+            "gate_calls_max": gate_max,
+            "extract_calls_max": extract_max,
+        }
     return out
 
 
 def _print_report(report: RunReport) -> None:
     for name, tally in report.sources.items():
-        print(f"{name}: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+        status = (report.fetch.get(name) or {}).get("status", "?")
+        print(f"{name}: [{status}] " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
     print("load: " + (", ".join(f"{k}={v}" for k, v in sorted(report.load.items())) or "(없음)"))
     if report.stale:
         print(f"stale(현재 프롬프트·모델과 다른 보존 결과, 재추출 안 함): {len(report.stale)}건")
@@ -641,7 +687,9 @@ def main(argv: list[str] | None = None) -> int:
         limits = Limits(parse_take(args.gate_limit), parse_take(args.extract_limit), args.max_gate_calls, args.max_extractions)
         result = plan(config, limits=limits, ledger=ledger, store=store)
         for name, info in result.items():
-            print(f"{name}: {info['states']}  게이트 ≤{info['gate_calls_max']}  추출 ≤{info['extract_calls_max']}")
+            fetch = info["fetch"]
+            status = fetch["status"] + (f" ({fetch['detail']})" if fetch.get("detail") else "")
+            print(f"{name}: [{status}] {info['states']}  게이트 ≤{info['gate_calls_max']}  추출 ≤{info['extract_calls_max']}")
         # 예상치는 **지금 피드 상태**에 달려 있고 실행 때 달라진다. 승인받을 숫자는 상한이다.
         print(
             f"현재 피드 기준 예상: 게이트 ≤{sum(i['gate_calls_max'] for i in result.values())}"

@@ -277,3 +277,164 @@ def test_limit_still_applies(fake_urlopen):
     fake_urlopen(_FakeResponse(two))
 
     assert len(rss.fetch_source(SOURCE, limit=1)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 실패 사유가 반환값에 남는다 (D-103)
+#
+# 예전에는 모든 실패가 `[]` 였고, 정상 0건(arXiv 주말)과 같은 모양이었다.
+# session-15 plan 때 DeepMind 파싱 실패가 파이프라인에서 경고 한 줄로만 보였다.
+# ---------------------------------------------------------------------------
+EMPTY_FEED = (
+    b'<?xml version="1.0" encoding="utf-8"?>'
+    b'<rss version="2.0"><channel><title>T</title></channel></rss>'
+)
+
+
+@pytest.mark.parametrize(
+    ("result", "status"),
+    [
+        (HTTPError("https://example.com/feed.xml", 404, "nf", {}, None), rss.FetchStatus.HTTP_ERROR),
+        (TimeoutError("timed out"), rss.FetchStatus.TIMEOUT),
+        (URLError(TimeoutError("timed out")), rss.FetchStatus.TIMEOUT),
+        (URLError("Name or service not known"), rss.FetchStatus.NETWORK_ERROR),
+        (_FakeResponse(b"<rss>" + b"x" * rss.FEED_MAX_BYTES), rss.FetchStatus.TOO_LARGE),
+        (_FakeResponse(b"<rss><channel><title>T</ti"), rss.FetchStatus.PARSE_ERROR),
+    ],
+)
+def test_each_failure_kind_has_its_own_status(fake_urlopen, result, status):
+    fake_urlopen(result)
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.status is status
+    assert fetched.failed
+    assert fetched.items == ()
+    assert fetched.detail
+
+
+def test_http_status_code_is_kept(fake_urlopen):
+    fake_urlopen(HTTPError("https://example.com/feed.xml", 503, "unavailable", {}, None))
+    assert rss.fetch_feed(SOURCE).http_status == 503
+
+
+def test_empty_feed_is_empty_not_failed(fake_urlopen):
+    """정상 0건. 실패와 다른 상태여야 한다 — 이 구분이 이번 변경의 요점이다."""
+    fake_urlopen(_FakeResponse(EMPTY_FEED))
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.status is rss.FetchStatus.EMPTY
+    assert not fetched.failed
+
+
+def test_entries_all_dropped_is_a_failure_not_an_empty_feed(fake_urlopen, capsys):
+    """엔트리가 있는데 link 가 전부 없다 — 피드 형식이 바뀐 신호다."""
+    no_links = (
+        b'<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+        b"<item><title>A</title></item><item><title>B</title></item></channel></rss>"
+    )
+    fake_urlopen(_FakeResponse(no_links))
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.status is rss.FetchStatus.NO_USABLE_ENTRIES
+    assert fetched.dropped == 2 and fetched.entries_in_feed == 2
+    assert "[fail] Test Feed" in capsys.readouterr().err
+
+
+def test_ok_feed_reports_counts(fake_urlopen):
+    fake_urlopen(_FakeResponse(FEED_XML))
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.status is rss.FetchStatus.OK
+    assert len(fetched.items) == 1 and fetched.entries_in_feed == 1 and fetched.dropped == 0
+    assert fetched.summary() == {"status": "ok", "items": 1}
+
+
+def test_missing_url_is_a_config_error():
+    assert rss.fetch_feed({"name": "No URL"}).status is rss.FetchStatus.CONFIG_ERROR
+
+
+def test_collect_results_yields_one_result_per_source(monkeypatch):
+    def _urlopen(request, timeout=None):
+        if "dead" in request.full_url:
+            raise HTTPError(request.full_url, 500, "err", {}, None)
+        return _FakeResponse(FEED_XML)
+
+    monkeypatch.setattr(rss, "urlopen", _urlopen)
+    config = {
+        "sources": {
+            "rss": [
+                {"name": "Dead", "url": "https://dead.example/feed.xml"},
+                {"name": "Alive", "url": "https://alive.example/feed.xml"},
+            ]
+        }
+    }
+
+    results = list(rss.collect_results(config))
+
+    assert [(r.source_name, r.status) for r in results] == [
+        ("Dead", rss.FetchStatus.HTTP_ERROR),
+        ("Alive", rss.FetchStatus.OK),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Content-Encoding — 요청하지 않은 gzip (D-104)
+#
+# DeepMind(Google Frontend)는 `Accept-Encoding` 없이도 캐시 노드에 따라
+# `content-encoding: gzip` 으로 답했다. urllib 은 풀지 않아 "not well-formed"
+# 로 떨어졌고, session-15 의 plan/run 불일치가 이것이었다.
+# ---------------------------------------------------------------------------
+def _encoded(body: bytes, encoding: str) -> _FakeResponse:
+    response = _FakeResponse(body)
+    response.headers["Content-Encoding"] = encoding
+    return response
+
+
+def test_unrequested_gzip_is_decoded(fake_urlopen):
+    import gzip
+
+    fake_urlopen(_encoded(gzip.compress(FEED_XML), "gzip"))
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.status is rss.FetchStatus.OK
+    assert fetched.items[0].title == "한글 제목"
+
+
+@pytest.mark.parametrize("raw", [False, True])
+def test_deflate_is_decoded_with_or_without_zlib_wrapper(fake_urlopen, raw):
+    import zlib
+
+    if raw:
+        comp = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+        body = comp.compress(FEED_XML) + comp.flush()
+    else:
+        body = zlib.compress(FEED_XML)
+    fake_urlopen(_encoded(body, "deflate"))
+
+    assert rss.fetch_feed(SOURCE).status is rss.FetchStatus.OK
+
+
+def test_gzip_bomb_is_capped_after_decompression(fake_urlopen):
+    """상한이 압축된 크기에만 걸리면 작은 gzip 이 메모리를 얼마든지 가져간다."""
+    import gzip
+
+    bomb = gzip.compress(b"<rss>" + b" " * (rss.FEED_MAX_BYTES + 10))
+    assert len(bomb) < rss.FEED_MAX_BYTES  # 압축 상태로는 상한 안이다
+    fake_urlopen(_encoded(bomb, "gzip"))
+
+    assert rss.fetch_feed(SOURCE).status is rss.FetchStatus.TOO_LARGE
+
+
+def test_unknown_or_broken_encoding_is_a_parse_error_with_reason(fake_urlopen):
+    fake_urlopen(_encoded(b"whatever", "br"))
+    fetched = rss.fetch_feed(SOURCE)
+    assert fetched.status is rss.FetchStatus.PARSE_ERROR
+    assert "br" in fetched.detail
+
+    fake_urlopen(_encoded(b"not gzip at all", "gzip"))
+    assert rss.fetch_feed(SOURCE).status is rss.FetchStatus.PARSE_ERROR
