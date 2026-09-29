@@ -38,12 +38,13 @@ from extraction.extractor import (
     DEFAULT_PROMPT,
     GATE_PROMPT,
     PROMPT_DIR,
+    Prompt,
     check_relevance,
     extract_ontology,
     load_prompt,
     record_unknown_companies,
 )
-from extraction.llm import SchemaMismatchError, client_from_config
+from extraction.llm import LLMClient, SchemaMismatchError, client_from_config
 from observability.events import (
     NullObserver,
     PipelineObserver,
@@ -154,6 +155,79 @@ def _store_payload(
     }
 
 
+# ---------------------------------------------------------------------------
+# 항목 1건의 단계 — `run_collect` 와 `pipeline.runner` 가 함께 쓴다
+# ---------------------------------------------------------------------------
+def run_gate(
+    item: RawItem,
+    *,
+    client: LLMClient,
+    prompt: Prompt,
+    prompt_sha: str,
+    observer: PipelineObserver,
+) -> dict[str, Any]:
+    """게이트 1건. 보존소·원장에 싣는 판정 payload 를 돌려준다.
+
+    스킵이면 여기서 `SkipRecord` 를 남긴다 (D-016). 호출부가 둘(`run_collect`,
+    `pipeline.runner`)이라, 기록을 호출부에 두면 한쪽에서 빠진다.
+    """
+    relevance = check_relevance(item, client, prompt=prompt)
+    payload = {
+        "prompt_name": relevance.prompt_name,
+        "prompt_sha256": prompt_sha,
+        "model": relevance.usage.model,
+        "attempts": relevance.attempts,
+        "is_relevant": relevance.gate.is_relevant,
+        "reason": relevance.gate.reason,
+        "usage": vars(relevance.usage),
+    }
+    if not relevance.is_relevant:
+        observer.record_skip(
+            SkipRecord(
+                url=str(item.url),
+                title=item.title,
+                source_name=item.source_name,
+                reason=relevance.gate.reason,
+                model=relevance.usage.model,
+                prompt_name=relevance.prompt_name,
+            )
+        )
+    return payload
+
+
+def run_extraction(
+    item: RawItem,
+    *,
+    doc_id: str,
+    gate_payload: dict[str, Any] | None,
+    client: LLMClient,
+    prompt: Prompt,
+    prompt_sha: str,
+    store: ExtractionStore,
+    observer: PipelineObserver,
+) -> Path:
+    """추출 1건 → **받은 즉시** 보존소에 쓴다 (D-052). 보존 경로를 돌려준다.
+
+    Raises:
+        SchemaMismatchError: 재시도 후에도 스키마 검증 실패. 아무것도 보존하지 않는다.
+    """
+    result = extract_ontology(item, client, prompt=prompt)
+    extraction_payload = {
+        "prompt_name": result.prompt_name,
+        "prompt_sha256": prompt_sha,
+        "model": result.usage.model,
+        "attempts": result.attempts,
+        "extracted_at": datetime.now(KST).isoformat(timespec="seconds"),
+        "ontology": json.loads(result.ontology.model_dump_json()),
+        "usage": vars(result.usage),
+    }
+    path = store.save(
+        _store_payload(item, doc_id=doc_id, gate=gate_payload, extraction=extraction_payload)
+    )
+    record_unknown_companies(result.ontology, item, observer)
+    return path
+
+
 def run_collect(
     config: dict[str, Any],
     *,
@@ -210,32 +284,25 @@ def run_collect(
         if budget <= 0:
             return False
 
-        relevance = check_relevance(item, gate_client, prompt=gate_prompt)
-        gate_payload = {
-            "prompt_name": relevance.prompt_name,
-            "prompt_sha256": gate_sha,
-            "model": relevance.usage.model,
-            "is_relevant": relevance.gate.is_relevant,
-            "reason": relevance.gate.reason,
-            "usage": vars(relevance.usage),
-        }
-        if not relevance.is_relevant:
-            observer.record_skip(
-                SkipRecord(
-                    url=str(item.url),
-                    title=item.title,
-                    source_name=item.source_name,
-                    reason=relevance.gate.reason,
-                    model=relevance.usage.model,
-                    prompt_name=relevance.prompt_name,
-                )
-            )
-            print(f"[gate] 스킵 {doc_id}: {relevance.gate.reason}", file=sys.stderr)
+        gate_payload = run_gate(
+            item, client=gate_client, prompt=gate_prompt, prompt_sha=gate_sha, observer=observer
+        )
+        if not gate_payload["is_relevant"]:
+            print(f"[gate] 스킵 {doc_id}: {gate_payload['reason']}", file=sys.stderr)
             seen.add(doc_id)
             return False
 
         try:
-            result = extract_ontology(item, extraction_client, prompt=extraction_prompt)
+            path = run_extraction(
+                item,
+                doc_id=doc_id,
+                gate_payload=gate_payload,
+                client=extraction_client,
+                prompt=extraction_prompt,
+                prompt_sha=extraction_sha,
+                store=store,
+                observer=observer,
+            )
         except SchemaMismatchError as exc:
             # 부분 결과를 보존하지 않는다. 형식이 아니라 내용이 비었다는 뜻이라
             # 재-export 로는 복구되지 않는다.
@@ -243,19 +310,6 @@ def run_collect(
             seen.add(doc_id)
             return False
 
-        record_unknown_companies(result.ontology, item, observer)
-        extraction_payload = {
-            "prompt_name": result.prompt_name,
-            "prompt_sha256": extraction_sha,
-            "model": result.usage.model,
-            "attempts": result.attempts,
-            "extracted_at": datetime.now(KST).isoformat(timespec="seconds"),
-            "ontology": json.loads(result.ontology.model_dump_json()),
-            "usage": vars(result.usage),
-        }
-        path = store.save(
-            _store_payload(item, doc_id=doc_id, gate=gate_payload, extraction=extraction_payload)
-        )
         seen.add(doc_id)
         stored_ids.append(doc_id)
         budget -= 1

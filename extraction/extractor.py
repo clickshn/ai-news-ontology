@@ -198,6 +198,7 @@ class RelevanceResult:
     gate: RelevanceGate
     prompt_name: str
     usage: Usage
+    attempts: int = 1
 
     @property
     def is_relevant(self) -> bool:
@@ -221,7 +222,11 @@ def check_relevance(
         system=system, user=user, output_model=RelevanceGate
     )
     return RelevanceResult(
-        item=item, gate=result.value, prompt_name=prompt.name, usage=result.usage
+        item=item,
+        gate=result.value,
+        prompt_name=prompt.name,
+        usage=result.usage,
+        attempts=result.attempts,
     )
 
 
