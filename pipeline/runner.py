@@ -1,10 +1,13 @@
 """파이프라인 오케스트레이션 — 수집 → 게이트 → 추출 → 보존 → 적재 (ADR-022).
 
-    # 무엇을 부를지만 본다 (API 호출 없음)
-    python -m pipeline plan --gate-limit "GeekNews=3" --extract-limit "GeekNews=2"
+    # 무엇을 부를지만 본다 (API 호출 없음). 상한은 config 의 sources.rss[].limits
+    python -m pipeline plan
 
     # 실제 실행. 상한은 소스별·단계별로 코드가 막는다
-    python -m pipeline run --gate-limit "GeekNews=3" --extract-limit "GeekNews=2"
+    python -m pipeline run
+
+    # CLI 상한을 하나라도 주면 config 상한 전체를 대체한다 (ADR-023)
+    python -m pipeline run --gate-limit "OpenAI News=3" --extract-limit "OpenAI News=2"
 
     # 보존소 → Vault 적재만 (API 호출 없음). 적재 실패 복구가 이 경로다
     python -m pipeline load
@@ -48,7 +51,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +69,17 @@ from extraction.schema import NewsOntology
 from observability.events import NullObserver, PipelineObserver, observer_from_config
 from obsidian_writer.mapper import NoteContext
 from obsidian_writer.writer import resolve_output_dir, vault_index, write_note
+from pipeline.admission import (
+    REFUSED,
+    UNDATED_ADMITTED,
+    Admission,
+    WindowPolicy,
+    check_silence,
+    last_drained,
+    source_window,
+    today_utc,
+    window_policy,
+)
 from pipeline.ledger import DEFAULT_LEDGER_DIR, Ledger, LedgerEntry, now_iso
 
 DEFAULT_RUNS_DIR = PROJECT_ROOT / "data" / "pipeline" / "runs"
@@ -75,8 +89,12 @@ DEFAULT_RUNS_DIR = PROJECT_ROOT / "data" / "pipeline" / "runs"
 # 적었는데, plan 때 파싱에 실패하던 소스가 실행 때 살아나 12건을 불렀다. 소스별 상한은
 # 지켜졌지만 전역 천장이 30 이라 아무것도 막지 않았다. 아래 값은 합이 이것을 넘을 때의
 # 절대 천장이다.
-HARD_MAX_GATE_CALLS = 30
-HARD_MAX_EXTRACTIONS = 15
+#
+# 30/15 에서 올렸다(ADR-023). 한국 매체 둘을 넣으면 하루 신규가 50건대이고 config
+# 상한의 합이 게이트 115 / 추출 51 이다. 이 값은 이제 **오타 방지선**이다 — 승인 대상은
+# 여전히 `plan` 이 출력하는 소스별 합이다.
+HARD_MAX_GATE_CALLS = 200
+HARD_MAX_EXTRACTIONS = 100
 
 BREAKER_THRESHOLD = 3
 
@@ -119,6 +137,45 @@ class Limits:
     def sources(self) -> list[str]:
         """상한이 걸린 소스만 돈다 — 상한 없는 소스를 기본값으로 부르지 않는다."""
         return list(dict.fromkeys([*self.gate, *self.extract]))
+
+
+def limits_from_config(
+    config: dict[str, Any], *, max_gate_calls: int | None = None, max_extractions: int | None = None
+) -> Limits:
+    """`sources.rss[].limits.{gate,extract}` 로 만든 상한. 상한이 없는 소스는 돌지 않는다."""
+    gate: dict[str, int] = {}
+    extract: dict[str, int] = {}
+    for source in rss_sources(config):
+        section = source.get("limits") or {}
+        if "gate" in section:
+            gate[source["name"]] = int(section["gate"])
+        if "extract" in section:
+            extract[source["name"]] = int(section["extract"])
+    return Limits(gate, extract, max_gate_calls, max_extractions)
+
+
+def resolve_limits(
+    config: dict[str, Any],
+    gate_args: Sequence[str],
+    extract_args: Sequence[str],
+    *,
+    max_gate_calls: int | None = None,
+    max_extractions: int | None = None,
+) -> tuple[Limits, str]:
+    """CLI 상한이 **하나라도** 있으면 config 상한 전체를 무시하고 CLI 값만 쓴다.
+
+    병합하지 않는 이유: "이 소스 3건"을 승인받고 CLI 로 준 실행이 나머지 소스를 config
+    기본값으로 함께 돌면, 승인받은 숫자와 코드가 막는 숫자가 다시 갈린다 (D-102, ADR-023).
+    CLI 에서 주지 않은 단계는 0 이다.
+    """
+    if gate_args or extract_args:
+        limits = Limits(parse_take(gate_args), parse_take(extract_args), max_gate_calls, max_extractions)
+        return limits, "cli"
+    return limits_from_config(config, max_gate_calls=max_gate_calls, max_extractions=max_extractions), "config"
+
+
+def source_config(config: dict[str, Any], source_name: str) -> dict[str, Any]:
+    return next((s for s in rss_sources(config) if s.get("name") == source_name), {})
 
 
 def fetch_source_result(config: dict[str, Any], source_name: str) -> FeedResult:
@@ -237,9 +294,13 @@ class RunReport:
     # 소스별 수집 결과와 그 사유 (FeedResult.summary). "장애로 0건"과 "정상 0건"을
     # 실행 요약에서 가를 수 있어야 한다 (D-103).
     fetch: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 소스별 수용 창과 완결 여부. 다음 실행의 기준점이 여기서 나온다 (ADR-023).
+    window: dict[str, dict[str, Any]] = field(default_factory=dict)
     finished_at: str | None = None
 
-    FAILURE_KEYS = ("source_error", "gate_error", "extract_schema_failed", "extract_transport_error")
+    # 소스 단위 실패. `stale_feed` 는 수집은 됐지만 갱신이 멈춘 피드다 (ADR-023).
+    SOURCE_FAILURE_KEYS = ("source_error", "stale_feed")
+    FAILURE_KEYS = (*SOURCE_FAILURE_KEYS, "gate_error", "extract_schema_failed", "extract_transport_error")
 
     @property
     def failures(self) -> int:
@@ -252,8 +313,12 @@ class RunReport:
 
     @property
     def healthy_sources(self) -> int:
-        """수집이 실패하지 않은 소스 수 (정상 0건 포함)."""
-        return sum(1 for f in self.fetch.values() if f.get("status") in ("ok", "empty"))
+        """수집이 실패하지 않았고 갱신도 멈추지 않은 소스 수 (정상 0건 포함)."""
+        return sum(
+            1
+            for name, f in self.fetch.items()
+            if f.get("status") in ("ok", "empty") and not self.sources.get(name, Counter())["stale_feed"]
+        )
 
     def exit_code(self) -> int:
         """0 = 실패 없음 · 3 = 부분 실패 · 1 = 실행이 제 역할을 못 했다.
@@ -268,7 +333,9 @@ class RunReport:
             return 0
         if self.produced:
             return 3
-        source_only = self.failures == sum(t["source_error"] for t in self.sources.values())
+        source_only = self.failures == sum(
+            t[k] for t in self.sources.values() for k in self.SOURCE_FAILURE_KEYS
+        )
         return 3 if source_only and self.healthy_sources else 1
 
     def to_dict(self) -> dict[str, Any]:
@@ -278,6 +345,7 @@ class RunReport:
             "finished_at": self.finished_at,
             "sources": {name: dict(t) for name, t in self.sources.items()},
             "fetch": self.fetch,
+            "window": self.window,
             "load": dict(self.load),
             "stale": self.stale,
             "breaker_tripped": self.breaker_tripped,
@@ -299,9 +367,13 @@ def run_llm_stages(
     extraction_prompt_name: str = DEFAULT_PROMPT,
     gate_prompt_name: str = GATE_PROMPT,
     breaker: Breaker | None = None,
+    runs_dir: Path | None = None,
+    today: date | None = None,
 ) -> None:
     """상한이 걸린 소스마다 수집 → 게이트 → 추출 → 보존. 적재는 하지 않는다."""
     breaker = breaker or Breaker()
+    today = today or today_utc()
+    policy = window_policy(config)
     gate_prompt = load_prompt(gate_prompt_name)
     extraction_prompt = load_prompt(extraction_prompt_name)
     gate_sha = prompt_sha256(gate_prompt_name)
@@ -328,6 +400,8 @@ def run_llm_stages(
         tally["collected"] = len(items)
         if fetched.status is FetchStatus.EMPTY:
             print(f"[info] {source_name}: 0건 — 피드는 정상이고 항목이 없다", file=sys.stderr)
+        _check_silence(config, source_name, items, today=today, tally=tally, report=report)
+        admission = _admission(policy, runs_dir, source_name, today=today)
 
         for item in items:
             doc_id = doc_id_for(str(item.url))
@@ -346,6 +420,15 @@ def run_llm_stages(
             if state in (STORED, STORED_OUTSIDE, QUARANTINED, GATE_SKIPPED):
                 tally[state] += 1
                 continue
+
+            # 창은 원장에 처음 들어오는 항목에만 건다 (ADR-023).
+            if admission is not None and state == NEEDS_GATE and entry is None:
+                verdict = admission.check(item.published_at)
+                if verdict in REFUSED:
+                    tally[verdict] += 1
+                    continue
+                if verdict == UNDATED_ADMITTED:
+                    tally[verdict] += 1
 
             entry = entry or LedgerEntry(
                 doc_id=doc_id, url=str(item.url), title=item.title, source_name=source_name
@@ -435,7 +518,45 @@ def run_llm_stages(
             tally["extracted"] += 1
             print(f"[ok] {doc_id} -> {path.name}", file=sys.stderr)
 
+        if admission is not None:
+            # 완결 = 창을 통과한 것 중 미룬 것이 없다. 미뤘으면 기준점이 앞으로 가지 않는다.
+            drained = tally["deferred_gate"] == 0 and tally["undated_deferred"] == 0
+            report.window[source_name] = {**admission.window.summary(), "drained": drained}
+
     report.breaker_tripped = sorted(breaker.tripped)
+
+
+def _check_silence(
+    config: dict[str, Any], source_name: str, items: Sequence[RawItem], *, today: date, tally: Counter, report: RunReport
+) -> None:
+    silence = check_silence(
+        (item.published_at for item in items),
+        today=today,
+        max_silence_days=source_config(config, source_name).get("max_silence_days"),
+    )
+    if silence is None:
+        return
+    tally["stale_feed"] += 1
+    report.fetch[source_name]["silent"] = silence
+    print(
+        f"[fail] {source_name}: 갱신 멈춤 의심 — 최신 발행일 {silence['newest']}"
+        f" ({silence['age_days']}일 전, 기준 {silence['max_silence_days']}일)",
+        file=sys.stderr,
+    )
+
+
+def _admission(policy: WindowPolicy | None, runs_dir: Path | None, source_name: str, *, today: date) -> Admission | None:
+    if policy is None:
+        return None
+    anchor = last_drained(runs_dir, source_name, today=today, policy=policy)
+    window = source_window(policy, today=today, anchor=anchor)
+    if window.capped:
+        print(
+            f"[warn] {source_name}: 창이 상한 {policy.max_lookback_days}일에 걸렸다"
+            f" (기준점 {window.summary()['anchor']}) — 그보다 오래된 미처리 항목은 받지 않는다",
+            file=sys.stderr,
+        )
+    return Admission(policy, window)
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +675,7 @@ def run_pipeline(
     rewrite_missing: bool = False,
     extraction_prompt_name: str = DEFAULT_PROMPT,
     gate_prompt_name: str = GATE_PROMPT,
+    today: date | None = None,
 ) -> RunReport:
     validate_sources(config, limits.sources)
     report = new_report()
@@ -568,6 +690,8 @@ def run_pipeline(
             clients=LazyClients(config, client_factory),
             extraction_prompt_name=extraction_prompt_name,
             gate_prompt_name=gate_prompt_name,
+            runs_dir=runs_dir,
+            today=today,
         )
         # LLM 단계가 어떻게 끝났든 적재는 돈다 — 이미 보존된 것을 날리지 않는다.
         load_pending(
@@ -590,21 +714,43 @@ def plan(
     ledger: Ledger,
     store: ExtractionStore,
     gate_prompt_name: str = GATE_PROMPT,
+    runs_dir: Path | None = None,
+    today: date | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """소스별 상태 도수와 **최대** 호출 건수. API 는 부르지 않는다 (피드 HTTP 만)."""
+    """소스별 상태 도수와 **최대** 호출 건수. API 는 부르지 않는다 (피드 HTTP 만).
+
+    창에 걸리는 항목은 `needs_gate` 가 아니라 `out_of_window` / `undated_deferred` 로 센다 —
+    run 과 같은 판정이다.
+    """
     validate_sources(config, limits.sources)
     gate_key = gate_key_for(config, gate_prompt_name)
+    today = today or today_utc()
+    policy = window_policy(config)
     out: dict[str, dict[str, Any]] = {}
     for source_name in limits.sources:
         states = Counter()
         fetched = fetch_source_result(config, source_name)
+        admission = _admission(policy, runs_dir, source_name, today=today) if not fetched.failed else None
         for item in fetched.items:
             doc_id = doc_id_for(str(item.url))
-            states[classify(ledger.get(doc_id), stored=store.path_for(doc_id).exists(), gate_key=gate_key)] += 1
+            entry = ledger.get(doc_id)
+            state = classify(entry, stored=store.path_for(doc_id).exists(), gate_key=gate_key)
+            if admission is not None and state == NEEDS_GATE and entry is None:
+                verdict = admission.check(item.published_at)
+                if verdict in REFUSED:
+                    state = verdict
+            states[state] += 1
+        silence = check_silence(
+            (item.published_at for item in fetched.items),
+            today=today,
+            max_silence_days=source_config(config, source_name).get("max_silence_days"),
+        )
         gate_max = min(states[NEEDS_GATE], limits.gate.get(source_name, 0))
         extract_max = min(states[NEEDS_EXTRACTION] + gate_max, limits.extract.get(source_name, 0))
         out[source_name] = {
             "fetch": fetched.summary(),
+            "window": admission.window.summary() if admission else None,
+            "silent": silence,
             "states": dict(states),
             "gate_calls_max": gate_max,
             "extract_calls_max": extract_max,
@@ -625,8 +771,14 @@ def _print_report(report: RunReport) -> None:
 
 
 def _add_limits(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--gate-limit", action="append", default=[], help="소스명=게이트 호출 상한")
-    parser.add_argument("--extract-limit", action="append", default=[], help="소스명=추출 호출 상한")
+    parser.add_argument(
+        "--gate-limit", action="append", default=[],
+        help="소스명=게이트 호출 상한. 하나라도 주면 config 상한 전체를 대체한다",
+    )
+    parser.add_argument(
+        "--extract-limit", action="append", default=[],
+        help="소스명=추출 호출 상한. 하나라도 주면 config 상한 전체를 대체한다",
+    )
     parser.add_argument("--max-gate-calls", type=int, default=None, help="기본: 소스별 상한의 합")
     parser.add_argument("--max-extractions", type=int, default=None, help="기본: 소스별 상한의 합")
 
@@ -649,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
     p_plan = sub.add_parser("plan", help="상태와 최대 호출 건수만 본다 (API 호출 없음)")
     _add_common(p_plan)
     _add_limits(p_plan)
+    p_plan.add_argument("--runs-dir", default=str(DEFAULT_RUNS_DIR), help="창의 기준점을 읽는 곳")
 
     p_run = sub.add_parser("run", help="전 단계 실행 (API 호출)")
     _add_common(p_run)
@@ -684,12 +837,23 @@ def main(argv: list[str] | None = None) -> int:
     store = ExtractionStore(args.store_dir)
 
     if args.command == "plan":
-        limits = Limits(parse_take(args.gate_limit), parse_take(args.extract_limit), args.max_gate_calls, args.max_extractions)
-        result = plan(config, limits=limits, ledger=ledger, store=store)
+        limits, mode = resolve_limits(
+            config, args.gate_limit, args.extract_limit,
+            max_gate_calls=args.max_gate_calls, max_extractions=args.max_extractions,
+        )
+        print(f"상한 출처: {mode}" + ("  (CLI 가 config 상한 전체를 대체)" if mode == "cli" else ""))
+        result = plan(config, limits=limits, ledger=ledger, store=store, runs_dir=Path(args.runs_dir))
         for name, info in result.items():
             fetch = info["fetch"]
             status = fetch["status"] + (f" ({fetch['detail']})" if fetch.get("detail") else "")
-            print(f"{name}: [{status}] {info['states']}  게이트 ≤{info['gate_calls_max']}  추출 ≤{info['extract_calls_max']}")
+            if info["silent"]:
+                status += f", 갱신 멈춤 의심: 최신 {info['silent']['newest']}"
+            window = info["window"]
+            span = f"  창 {window['cutoff']}~ ({window['span_days']}일{', 상한' if window['capped'] else ''})" if window else ""
+            print(
+                f"{name}: [{status}] {info['states']}{span}"
+                f"  게이트 ≤{info['gate_calls_max']}  추출 ≤{info['extract_calls_max']}"
+            )
         # 예상치는 **지금 피드 상태**에 달려 있고 실행 때 달라진다. 승인받을 숫자는 상한이다.
         print(
             f"현재 피드 기준 예상: 게이트 ≤{sum(i['gate_calls_max'] for i in result.values())}"
@@ -713,10 +877,14 @@ def main(argv: list[str] | None = None) -> int:
         _print_report(report)
         return report.exit_code()
 
-    limits = Limits(parse_take(args.gate_limit), parse_take(args.extract_limit), args.max_gate_calls, args.max_extractions)
+    limits, mode = resolve_limits(
+        config, args.gate_limit, args.extract_limit,
+        max_gate_calls=args.max_gate_calls, max_extractions=args.max_extractions,
+    )
     if not limits.sources:
-        print("--gate-limit / --extract-limit 로 소스를 하나 이상 지정하세요.", file=sys.stderr)
+        print("상한이 걸린 소스가 없습니다 — config 의 sources.rss[].limits 나 --gate-limit / --extract-limit", file=sys.stderr)
         return 2
+    print(f"상한 출처: {mode}  게이트 천장 {limits.max_gate_calls}  추출 천장 {limits.max_extractions}", file=sys.stderr)
     report = run_pipeline(
         config,
         limits=limits,

@@ -49,7 +49,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from collectors.base import RawItem
-from collectors.rss import load_config, rss_sources
+from collectors.rss import load_config, retired_sources, rss_sources
 from eval.runner import DEFAULT_GOLDEN_SET_DIR, PROMPT_HASH_SCHEME, load_golden_set, prompt_sha256
 from eval.schema import GoldenItem
 from extraction.extractor import (
@@ -90,6 +90,9 @@ def _registrable(host: str) -> str:
 def resolve_source_name(source_url: str, config: dict[str, Any]) -> str:
     """`source_url` 의 호스트로 `config.yaml` 의 소스 이름을 찾는다.
 
+    수집을 멈춘 소스(`sources.retired`)도 찾는다 — 골든셋은 제외 전에 들어온 항목을
+    그대로 쓴다 (D-105). 활성·은퇴 목록에 같은 호스트가 있으면 모호하다고 본다.
+
     Raises:
         PredictError: 못 찾거나 **둘 이상 맞는** 경우. 모호한 채로 하나를 고르면
             프롬프트에 들어간 `source_name` 이 무엇인지 나중에 알 수 없다.
@@ -101,7 +104,7 @@ def resolve_source_name(source_url: str, config: dict[str, Any]) -> str:
     matches = sorted(
         {
             str(src["name"])
-            for src in rss_sources(config)
+            for src in [*rss_sources(config), *retired_sources(config)]
             if src.get("name")
             and src.get("url")
             and _registrable(urlsplit(str(src["url"])).hostname or "") == host

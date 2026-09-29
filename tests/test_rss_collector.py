@@ -438,3 +438,82 @@ def test_unknown_or_broken_encoding_is_a_parse_error_with_reason(fake_urlopen):
 
     fake_urlopen(_encoded(b"not gzip at all", "gzip"))
     assert rss.fetch_feed(SOURCE).status is rss.FetchStatus.PARSE_ERROR
+
+
+# ---------------------------------------------------------------------------
+# 시간대 없는 발행일 (ADR-023)
+#
+# AI타임스(일반 피드)·인공지능신문은 `2026-09-29 07:27:02` 처럼 시간대 없이 KST 를
+# 준다. feedparser 는 그 숫자를 UTC 로 간주한다. 같은 기사가 시간대 있는 gn 피드
+# (`+0900`)에서는 09-28 이었다 — 발행일이 수용 기준이 된 이상 조용히 틀리는 자리다.
+# ---------------------------------------------------------------------------
+def _feed_with_date(pub: str) -> bytes:
+    return FEED_XML.replace(b"Mon, 21 Sep 2026 00:00:00 GMT", pub.encode())
+
+
+def test_naive_date_is_read_with_the_source_offset(fake_urlopen, capsys):
+    fake_urlopen(_FakeResponse(_feed_with_date("2026-09-29 07:27:02")))
+
+    fetched = rss.fetch_feed({**SOURCE, "naive_date_offset": "+09:00"})
+
+    assert fetched.items[0].published_at.isoformat() == "2026-09-28"  # KST 07:27 = UTC 전날
+    assert fetched.naive_dates == 1
+    assert fetched.warning == ""
+    assert "UTC 로 읽음" not in capsys.readouterr().err
+
+
+def test_naive_date_without_offset_is_utc_and_says_so(fake_urlopen, capsys):
+    fake_urlopen(_FakeResponse(_feed_with_date("2026-09-29 07:27:02")))
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.items[0].published_at.isoformat() == "2026-09-29"
+    assert fetched.naive_dates == 1
+    assert "UTC 로 읽음" in fetched.warning
+    assert "[warn] Test Feed" in capsys.readouterr().err
+    assert fetched.status is rss.FetchStatus.OK  # 경고이지 실패가 아니다
+
+
+@pytest.mark.parametrize(
+    "pub",
+    ["Tue, 29 Sep 2026 12:00:00 +0900", "2026-09-29T03:00:00Z", "Tue, 29 Sep 2026 03:00:00 GMT", "2026-09-29T12:00:00+09:00"],
+)
+def test_explicit_offset_wins_over_the_source_offset(fake_urlopen, pub):
+    """표기가 있는 값에 소스 오프셋을 또 빼면 어긋난다.
+
+    전부 UTC 09-29 03:00 이다. 오프셋(9시간)을 한 번 더 빼면 09-28 로 넘어가므로,
+    날짜가 그대로여야 이중 적용이 없다는 뜻이다 — 자정을 넘지 않는 시각으로는
+    이중 적용이 드러나지 않는다(변이 검사에서 확인).
+    """
+    fake_urlopen(_FakeResponse(_feed_with_date(pub)))
+
+    fetched = rss.fetch_feed({**SOURCE, "naive_date_offset": "+09:00"})
+
+    assert fetched.items[0].published_at.isoformat() == "2026-09-29"
+    assert fetched.naive_dates == 0
+
+
+@pytest.mark.parametrize("value", ["KST", "+9", "09:00", "+09:00:00"])
+def test_malformed_offset_is_a_config_error(fake_urlopen, value):
+    fake_urlopen(_FakeResponse(FEED_XML))
+    assert rss.fetch_feed({**SOURCE, "naive_date_offset": value}).status is rss.FetchStatus.CONFIG_ERROR
+
+
+def test_parse_offset_handles_sign_and_compact_form():
+    from datetime import timedelta
+
+    assert rss.parse_offset("+09:00") == timedelta(hours=9)
+    assert rss.parse_offset("-0530") == -timedelta(hours=5, minutes=30)
+    assert rss.parse_offset(None) is None
+
+
+def test_retired_sources_are_never_collected(fake_urlopen):
+    """제외는 앞으로만이다(D-105). 은퇴 목록은 이름 유도용이지 수집 대상이 아니다."""
+    calls = fake_urlopen(_FakeResponse(FEED_XML))
+    config = {"sources": {"rss": [SOURCE], "retired": [{"name": "Old", "url": "https://old.example/feed.xml"}]}}
+
+    results = list(rss.collect_results(config))
+
+    assert [r.source_name for r in results] == ["Test Feed"]
+    assert all("old.example" not in c["request"].full_url for c in calls)
+    assert rss.retired_sources(config)[0]["name"] == "Old"

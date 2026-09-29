@@ -7,10 +7,12 @@
 |---|---|
 | `ledger.py` | doc_id 당 단계 상태 (`data/pipeline/ledger/`). 게이트 판정·실패 횟수·격리·적재 기록 |
 | `runner.py` | `plan` / `run` / `load` / `release` CLI |
+| `admission.py` | 수용 창 · 미확정 발행일 · 갱신 멈춤 판정 (ADR-023) |
 
 ```bash
-python -m pipeline plan --gate-limit "GeekNews=3" --extract-limit "GeekNews=2"   # API 호출 없음
-python -m pipeline run  --gate-limit "GeekNews=3" --extract-limit "GeekNews=2"   # 승인 대상
+python -m pipeline plan                                                          # API 호출 없음. 상한은 config
+python -m pipeline run                                                           # 승인 대상
+python -m pipeline run  --gate-limit "OpenAI News=3" --extract-limit "OpenAI News=2"   # CLI 가 config 상한 전체를 대체
 python -m pipeline load                                                          # 보존소 → Vault 만
 python -m pipeline release <doc_id>                                              # 격리 해제
 ```
@@ -38,18 +40,55 @@ MARA export 의 입력에도 그대로 쌓인다.
 
 ## 상한
 
-`--gate-limit` / `--extract-limit` 이 걸린 소스**만** 수집한다. 전역 천장
-(`--max-gate-calls` / `--max-extractions`)의 기본값은 **소스별 상한의 합**이다 (D-102).
+상한은 `config.yaml` 의 `sources.rss[].limits.{gate,extract}` 가 기본이다 (ADR-023).
+**`--gate-limit` / `--extract-limit` 을 하나라도 주면 config 상한 전체를 무시하고 CLI 값만
+쓴다** — 주지 않은 단계는 0 이다. 병합하지 않는 이유: "이 소스 3건"을 승인받은 실행이
+나머지 소스를 config 값으로 함께 돌면 승인받은 숫자와 코드가 막는 숫자가 갈린다(D-102).
+실행은 첫 줄에 `상한 출처: config | cli` 를 찍는다.
+
+상한이 걸린 소스**만** 수집한다. 전역 천장(`--max-gate-calls` / `--max-extractions`)의
+기본값은 **소스별 상한의 합**이다 (D-102). 코드의 절대 천장(200/100)은 오타 방지선이다.
 **승인받을 숫자는 `plan` 의 "승인 대상 상한" 줄이다** — "현재 피드 기준 예상"은 피드
 상태에 달려 실행 때 바뀐다. 상한은 논리 호출 수이고, 스키마 재시도로 요청 수는 최대 2배다.
+
+## 수용 창 (ADR-023)
+
+원장에 **처음 들어오는** 항목만 발행일(UTC 날짜)로 거른다. 원장에 이미 있는 항목(게이트
+오류 재시도, 추출 대기)은 날짜와 무관하게 이어서 처리한다 — 다시 보는 비용은 0 이라,
+창이 막는 것은 첫 수용 범위 하나다. 설정은 `config.yaml: pipeline.window` 이고, 이 절이
+없으면 창이 꺼진다.
+
+| 상황 | 창 |
+|---|---|
+| 첫 실행 (이 소스의 실행 기록 없음) | `lookback_days` (7) |
+| 매일 실행 | `lookback_days` (7) |
+| 마지막 완결 실행 뒤 N일 쉼 | `N + overlap_days`, 최대 `max_lookback_days` (14) |
+| 기록은 있는데 14일 안에 완결 실행이 없음 | 14 + `[warn]` + `capped` |
+
+- **기준점은 소스별 "마지막 완결 실행"이다** (`data/pipeline/runs/` 요약의 `window`).
+  완결은 수집이 실패하지 않았고, 창을 통과한 항목 중 상한·차단기로 미룬 것
+  (`deferred_gate`)과 미확정 초과분(`undated_deferred`)이 0 인 실행이다. 미룬 게 있으면
+  기준점이 앞으로 가지 않는다.
+- 발행일이 없거나 내일보다 뒤이면 **미확정**이다. 피드 순서 앞에서부터 소스당
+  `undated_max_per_run`(5) 건까지만 받는다 (`undated_admitted` / `undated_deferred`).
+- 창 밖은 `out_of_window` 로 센다. `collected` 는 피드가 준 전체다.
+- ⚠️ 창은 **피드가 아직 주는 항목**만 되살린다. 한국어 매체 피드는 최근 50건(2~3일치)만
+  준다 — 3일 넘게 쉬면 그 사이 글은 창과 무관하게 잃는다.
+
+## 갱신 멈춤 (ADR-023)
+
+`sources.rss[].max_silence_days` 보다 가장 최근 발행일이 오래됐으면 `stale_feed` 로 세고
+**소스 단위 실패**로 다룬다(종료 코드 3). 200 을 주면서 내용이 안 늘어나는 피드는 수집
+실패 구분(D-103)에 걸리지 않는다 — ZDNet Korea 의 레거시 경로가 2024-05-10 에 멈춘 채
+200 을 주고 있었다. 항목은 그대로 흐르고, 창이 오래된 것을 거른다.
 
 ## 종료 코드
 
 | 코드 | 뜻 |
 |---|---|
 | `0` | 실패 없음 (**정상 0건 소스는 실패가 아니다** — arXiv 주말) |
-| `3` | 부분 실패 — 산출이 있거나, **수집 실패만 있고 다른 소스는 정상으로 받았다** |
-| `1` | 실행이 제 역할을 못 했다 — 모든 소스가 수집 실패, 또는 LLM·적재 실패가 있는데 산출 0건 |
+| `3` | 부분 실패 — 산출이 있거나, **소스 단위 실패(수집 실패 · 갱신 멈춤)만 있고 다른 소스는 정상으로 받았다** |
+| `1` | 실행이 제 역할을 못 했다 — 모든 소스가 소스 단위 실패, 또는 LLM·적재 실패가 있는데 산출 0건 |
 | `2` | 인자 오류 |
 
 실행 요약은 `data/pipeline/runs/{run_id}.json`. 소스별 수집 결과는 `fetch` 에

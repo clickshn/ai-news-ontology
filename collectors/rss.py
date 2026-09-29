@@ -19,7 +19,7 @@ import re
 import sys
 import zlib
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
@@ -56,6 +56,12 @@ FEED_MAX_BYTES = 8 * 1024 * 1024
 USER_AGENT = "ai-news-ontology/0.1 (feed collector; https://github.com/clickshn)"
 FEED_ACCEPT = "application/atom+xml, application/rss+xml, application/xml;q=0.9, */*;q=0.8"
 
+# 발행일 원문 끝에 시간대 표기가 있는가. feedparser 는 표기가 없는 값을 UTC 로
+# 간주해 파싱하므로(`*_parsed`), 원문을 따로 봐야 "UTC 였다"와 "표기가 없었다"를
+# 가를 수 있다. 미국 약어(EST 등)는 RFC 822 가 허용하는 것만.
+_EXPLICIT_TZ_RE = re.compile(r"(?:Z|[+-]\d{2}:?\d{2}|\b(?:GMT|UTC|UT|[ECMP][SD]T))\s*$", re.IGNORECASE)
+_OFFSET_RE = re.compile(r"^([+-])(\d{2}):?(\d{2})$")
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t ]+")
 _BLANKLINE_RE = re.compile(r"\n{3,}")
@@ -83,6 +89,19 @@ def rss_sources(config: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(sources, list):
         raise ValueError("config.yaml: sources.rss 는 리스트여야 합니다")
     return sources
+
+
+def retired_sources(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """수집을 멈춘 소스 (`sources.retired`). **수집하지 않는다** — `collect` 는 보지 않는다.
+
+    남겨 두는 이유: 제외는 앞으로만이다(D-105). 이미 들어온 골든셋·노트·보존소 항목은
+    그대로이고, `eval.predict` 는 골든셋 URL 의 호스트로 소스 이름을 유도한다. 목록에서
+    지우면 GeekNews 골든셋 2건(#33001 · #33003)의 재추출이 "소스를 찾을 수 없다"로 멈춘다.
+    """
+    retired = (config.get("sources") or {}).get("retired") or []
+    if not isinstance(retired, list):
+        raise ValueError("config.yaml: sources.retired 는 리스트여야 합니다")
+    return retired
 
 
 # ---------------------------------------------------------------------------
@@ -126,16 +145,52 @@ def _entry_body(entry: Any) -> str:
     return best[:BODY_MAX_CHARS]
 
 
-def _entry_date(entry: Any) -> date | None:
-    """발행일 파싱. 피드마다 필드명이 달라 후보를 순회한다."""
-    for key in ("published_parsed", "updated_parsed", "created_parsed"):
-        parsed = getattr(entry, key, None)
-        if parsed:
-            try:
-                return datetime(*parsed[:6], tzinfo=timezone.utc).date()
-            except (TypeError, ValueError):
-                continue
-    return None
+class InvalidOffsetError(ValueError):
+    """`naive_date_offset` 형식이 `+09:00` / `-0500` 꼴이 아니다."""
+
+
+def parse_offset(value: str | None) -> timedelta | None:
+    """config 의 `naive_date_offset`("+09:00") 을 timedelta 로. 없으면 None."""
+    if value is None or value == "":
+        return None
+    match = _OFFSET_RE.match(str(value).strip())
+    if not match:
+        raise InvalidOffsetError(f"naive_date_offset 형식이 아닙니다: {value!r} (예: \"+09:00\")")
+    sign, hours, minutes = match.groups()
+    delta = timedelta(hours=int(hours), minutes=int(minutes))
+    return -delta if sign == "-" else delta
+
+
+def _entry_datetime(entry: Any, naive_offset: timedelta | None = None) -> tuple[date | None, bool]:
+    """발행일(UTC 날짜)과 **원문에 시간대 표기가 없었는지**를 돌려준다.
+
+    `published_at` 은 모든 소스에서 **UTC 날짜**다 (ADR-023). 시간대를 주는 피드는
+    feedparser 가 이미 UTC 로 바꿔 준다. 표기가 없는 값(`2026-09-29 07:27:02`,
+    AI타임스·인공지능신문)은 feedparser 가 그 숫자를 UTC 로 간주하므로, 소스의
+    `naive_date_offset` 이 있으면 그만큼 빼서 UTC 로 옮긴다. 없으면 UTC 로 읽고
+    naive 였다는 사실만 돌려준다 — 호출자가 경고로 드러낸다.
+
+    피드마다 필드명이 달라 후보를 순회한다.
+    """
+    for key in ("published", "updated", "created"):
+        parsed = getattr(entry, f"{key}_parsed", None)
+        if not parsed:
+            continue
+        try:
+            moment = datetime(*parsed[:6])
+        except (TypeError, ValueError):
+            continue
+        raw = entry.get(key) if hasattr(entry, "get") else None
+        naive = bool(raw) and not _EXPLICIT_TZ_RE.search(str(raw).strip())
+        if naive and naive_offset is not None:
+            moment -= naive_offset
+        return moment.date(), naive
+    return None, False
+
+
+def _entry_date(entry: Any, naive_offset: timedelta | None = None) -> date | None:
+    """발행일(UTC 날짜). `_entry_datetime` 참고."""
+    return _entry_datetime(entry, naive_offset)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +319,8 @@ class FeedResult:
     # 엔트리는 건졌지만 XML 이 온전하지 않았다(feedparser bozo). 실패는 아니다.
     # 형식이 흔들리는 피드를 알아보려고 남긴다.
     warning: str = ""
+    # 시간대 표기 없이 온 발행일 수. `naive_date_offset` 이 없으면 UTC 로 읽었다는 뜻이다.
+    naive_dates: int = 0
 
     @property
     def failed(self) -> bool:
@@ -312,6 +369,10 @@ def fetch_feed(
         return _failure(name, FetchStatus.CONFIG_ERROR, "url 이 없습니다")
 
     timeout = FETCH_TIMEOUT_S if timeout is None else timeout
+    try:
+        naive_offset = parse_offset(source.get("naive_date_offset"))
+    except InvalidOffsetError as exc:
+        return _failure(name, FetchStatus.CONFIG_ERROR, str(exc))
 
     try:
         data, content_type = fetch_feed_bytes(url, timeout=timeout)
@@ -354,12 +415,15 @@ def fetch_feed(
 
     items: list[RawItem] = []
     dropped = 0
+    naive_dates = 0
     for entry in entries:
         link = entry.get("link")
         title = (entry.get("title") or "").strip()
         if not link or not title:
             dropped += 1
             continue
+        published_at, naive = _entry_datetime(entry, naive_offset)
+        naive_dates += naive
         try:
             items.append(
                 RawItem(
@@ -367,7 +431,7 @@ def fetch_feed(
                     title=title,
                     body=_entry_body(entry),
                     source_name=name,
-                    published_at=_entry_date(entry),
+                    published_at=published_at,
                     collected_at=today,
                     tags=tags,
                 )
@@ -376,7 +440,17 @@ def fetch_feed(
             print(f"[skip] {name}: 엔트리 검증 실패 {link} ({exc.error_count()}건)", file=sys.stderr)
             dropped += 1
 
-    counts: dict[str, Any] = {"entries_in_feed": len(feed.entries), "dropped": dropped, "warning": warning}
+    if naive_dates and naive_offset is None:
+        # 조용히 틀리는 자리다 — 발행일이 수용 판정 기준이므로 드러낸다 (ADR-023).
+        note = f"시간대 없는 발행일 {naive_dates}건을 UTC 로 읽음 (naive_date_offset 미설정)"
+        print(f"[warn] {name}: {note}", file=sys.stderr)
+        warning = f"{warning}; {note}" if warning else note
+    counts: dict[str, Any] = {
+        "entries_in_feed": len(feed.entries),
+        "dropped": dropped,
+        "warning": warning,
+        "naive_dates": naive_dates,
+    }
     if not items and dropped:
         return _failure(
             name,

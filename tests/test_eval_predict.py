@@ -272,3 +272,46 @@ class TestSummarize:
         summary = summarize([_row(finish_reasons=["length"], stop_kinds=["degenerate"])])
         assert summary["degenerate"] == 1
         assert summary["truncated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 수집을 멈춘 소스 (D-105)
+#
+# GeekNews 는 수집에서 뺐지만 골든셋 2건(#33001 · #33003)은 남는다. 이름 유도가
+# 활성 목록만 보면 그 2건의 재추출이 "소스를 찾을 수 없다"로 멈춘다.
+# ---------------------------------------------------------------------------
+RETIRED_CONFIG = {
+    "sources": {
+        "rss": [{"name": "arXiv cs.CL (Atom API)", "url": "http://export.arxiv.org/api/query?search_query=cat:cs.CL"}],
+        "retired": [{"name": "GeekNews", "url": "https://news.hada.io/rss/news"}],
+    }
+}
+
+
+def test_retired_source_still_resolves_for_the_golden_set():
+    assert resolve_source_name("https://news.hada.io/topic?id=33001", RETIRED_CONFIG) == "GeekNews"
+
+
+def test_same_host_in_active_and_retired_is_ambiguous():
+    config = {
+        "sources": {
+            "rss": [{"name": "GeekNews (new)", "url": "https://news.hada.io/rss/topics"}],
+            "retired": [{"name": "GeekNews", "url": "https://news.hada.io/rss/news"}],
+        }
+    }
+    with pytest.raises(PredictError):
+        resolve_source_name("https://news.hada.io/topic?id=33001", config)
+
+
+def test_shipped_config_resolves_every_golden_item():
+    """실제 config 와 실제 골든셋. 소스를 뺄 때 이 테스트가 먼저 깨져야 한다."""
+    import json
+    from pathlib import Path
+
+    from collectors.rss import load_config
+
+    config = load_config()
+    golden_dir = Path(__file__).resolve().parent.parent / "eval" / "golden_set"
+    for path in sorted(golden_dir.glob("2*.json")):
+        url = json.loads(path.read_text(encoding="utf-8"))["source_url"]
+        assert resolve_source_name(url, config), path.name

@@ -523,3 +523,168 @@ class TestVaultIndex:
 
     def test_missing_directory_is_an_empty_index(self, tmp_path):
         assert vault_index(tmp_path / "none", key=doc_id_for) == {}
+
+
+# ---------------------------------------------------------------------------
+# 수용 창 · 갱신 멈춤 · config 상한 (ADR-023)
+# ---------------------------------------------------------------------------
+from datetime import timedelta  # noqa: E402
+
+from pipeline.runner import limits_from_config, plan, resolve_limits  # noqa: E402
+
+TODAY = date(2026, 9, 29)
+WINDOW = {"lookback_days": 7, "overlap_days": 1, "max_lookback_days": 14, "undated_max_per_run": 1}
+
+
+def _dated(n: int, days_ago: int | None, source: str = GEEK) -> RawItem:
+    return RawItem(
+        url=f"https://example.com/{source.split()[0].lower()}/d{n}",
+        title=f"{source} 기사 d{n}",
+        body="본문",
+        source_name=source,
+        published_at=None if days_ago is None else TODAY - timedelta(days=days_ago),
+    )
+
+
+@pytest.fixture
+def windowed(env):
+    env["config"]["pipeline"] = {"window": dict(WINDOW)}
+    env["feeds"][OPENAI] = []
+    return env
+
+
+class TestAdmissionWindow:
+    def test_only_items_inside_the_window_reach_the_gate(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 7), _dated(3, 8), _dated(4, 400)]
+
+        report = windowed["run"](today=TODAY)
+
+        tally = report.sources[GEEK]
+        assert tally["gate_calls"] == 2 and tally["out_of_window"] == 2
+        assert tally["collected"] == 4  # 수집한 것과 받아들인 것을 따로 남긴다
+        assert report.window[GEEK]["cutoff"] == "2026-09-22" and report.window[GEEK]["drained"]
+
+    def test_undated_items_are_capped_per_run(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, None), _dated(2, None), _dated(3, None)]
+
+        report = windowed["run"](today=TODAY)
+
+        assert report.sources[GEEK]["undated_admitted"] == 1
+        assert report.sources[GEEK]["undated_deferred"] == 2
+        assert not report.window[GEEK]["drained"]
+
+    def test_items_already_in_the_ledger_ignore_the_window(self, windowed):
+        """게이트 오류로 재시도를 기다리던 항목이 날짜가 지났다고 버려지면 안 된다."""
+        old = _dated(1, 6)
+        windowed["feeds"][GEEK] = [old]
+        windowed["gate"].behaviour = lambda title: VLLMEndpointError("down")
+        windowed["run"](today=TODAY)
+        windowed["gate"].behaviour = lambda title: None
+
+        report = windowed["run"](today=TODAY + timedelta(days=5))  # 이제 11일 전 항목
+
+        assert report.sources[GEEK]["out_of_window"] == 0
+        assert report.sources[GEEK]["gate_calls"] == 1
+
+    def test_a_pause_widens_the_window_from_the_last_drained_run(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0)]
+        windowed["run"](today=TODAY)  # 완결 실행 = 09-29
+
+        later = TODAY + timedelta(days=10)
+        # 쉬는 동안(09-29) 발행된 항목 — later 기준 10일 전이라 최소 창(7일)이면 빠진다
+        windowed["feeds"][GEEK] = [_dated(2, 0)]
+        report = windowed["run"](today=later)
+
+        assert report.window[GEEK]["span_days"] == 11
+        assert report.sources[GEEK]["gate_calls"] == 1
+
+    def test_deferred_items_keep_the_anchor_from_moving(self, windowed):
+        """상한 때문에 미룬 항목이 있으면 그 실행은 완결이 아니다 — 기준점이 그대로다."""
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 1}, extract={GEEK: 1}, today=TODAY)
+
+        report = windowed["run"](gate={GEEK: 1}, extract={GEEK: 1}, today=TODAY + timedelta(days=9))
+
+        assert report.window[GEEK]["anchor"] == "none_drained"
+        assert report.window[GEEK]["capped"]
+
+    def test_no_window_section_means_everything_is_admitted(self, env):
+        env["feeds"][GEEK] = [_dated(1, 400)]
+        report = env["run"](today=TODAY)
+        assert report.sources[GEEK]["gate_calls"] == 1 and report.window == {}
+
+    def test_plan_counts_the_window_the_same_way(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 30)]
+        limits = Limits(gate={GEEK: 5}, extract={GEEK: 5})
+
+        result = plan(
+            windowed["config"], limits=limits, ledger=windowed["ledger"], store=windowed["store"],
+            runs_dir=windowed["runs"], today=TODAY,
+        )
+
+        assert result[GEEK]["states"] == {"needs_gate": 1, "out_of_window": 1}
+        assert result[GEEK]["gate_calls_max"] == 1
+
+
+class TestSilentFeed:
+    def test_a_feed_that_stopped_updating_is_a_source_failure(self, env):
+        """ZDNet Korea: 200 을 주면서 2024-05-10 에 멈춰 있었다."""
+        env["config"]["sources"]["rss"][0]["max_silence_days"] = 3
+        env["feeds"][GEEK] = [_dated(1, 20)]
+
+        report = env["run"](today=TODAY)
+
+        assert report.sources[GEEK]["stale_feed"] == 1
+        assert report.fetch[GEEK]["silent"]["age_days"] == 20
+        assert report.exit_code() == 3  # OpenAI 는 흘렀다
+
+    def test_all_sources_silent_and_nothing_produced_exits_1(self, env):
+        for source in env["config"]["sources"]["rss"]:
+            source["max_silence_days"] = 3
+        env["feeds"][GEEK] = [_dated(1, 20)]
+        env["feeds"][OPENAI] = [_dated(1, 20, OPENAI)]
+        env["config"]["pipeline"] = {"window": dict(WINDOW)}  # 오래된 항목은 창이 거른다
+
+        report = env["run"](today=TODAY)
+
+        assert report.produced == 0
+        assert report.exit_code() == 1
+
+    def test_recent_feed_is_not_silent(self, env):
+        env["config"]["sources"]["rss"][0]["max_silence_days"] = 3
+        env["feeds"][GEEK] = [_dated(1, 1)]
+        assert env["run"](today=TODAY).sources[GEEK]["stale_feed"] == 0
+
+
+class TestConfigLimits:
+    CONFIG = {
+        "sources": {
+            "rss": [
+                {"name": GEEK, "url": "x", "limits": {"gate": 40, "extract": 15}},
+                {"name": OPENAI, "url": "y", "limits": {"gate": 10, "extract": 5}},
+                {"name": "No Limits", "url": "z"},
+            ]
+        }
+    }
+
+    def test_config_limits_are_used_without_cli_arguments(self):
+        limits, mode = resolve_limits(self.CONFIG, [], [])
+        assert mode == "config"
+        assert limits.gate == {GEEK: 40, OPENAI: 10} and limits.extract == {GEEK: 15, OPENAI: 5}
+        assert limits.sources == [GEEK, OPENAI]  # 상한 없는 소스는 돌지 않는다
+        assert limits.max_gate_calls == 50  # 전역 천장 기본값은 여전히 소스별 합 (D-102)
+
+    def test_any_cli_limit_replaces_the_config_entirely(self):
+        """병합하면 "이 소스 3건"을 승인받은 실행이 나머지 소스를 config 값으로 함께 돈다."""
+        limits, mode = resolve_limits(self.CONFIG, [f"{GEEK}=3"], [])
+        assert mode == "cli"
+        assert limits.gate == {GEEK: 3} and limits.extract == {}
+        assert limits.sources == [GEEK]
+        assert limits.max_gate_calls == 3 and limits.max_extractions == 0
+
+    def test_limits_from_config_matches_the_shipped_config(self):
+        from collectors.rss import load_config
+
+        limits = limits_from_config(load_config())
+        assert limits.max_gate_calls == sum(limits.gate.values())
+        assert limits.max_extractions == sum(limits.extract.values())

@@ -61,6 +61,24 @@ RSS 공지 피드는 주말·공휴일에 0건이라 API 쿼리를 쓴다 — �
 session-15 의 plan 실패 / run 성공 불일치가 이것이다. `gzip` · `deflate` 를 풀고,
 **푼 크기에도** `FEED_MAX_BYTES` 를 건다. 모르는 방식은 `parse_error` 다.
 
+## 발행일은 UTC 날짜다 (ADR-023)
+
+`published_at` 은 모든 소스에서 **UTC 날짜**다. 발행일이 수용 창의 기준이라, 소스마다
+다른 기준으로 읽으면 조용히 틀린다.
+
+- 원문에 시간대 표기(`Z`, `±hh:mm`, `±hhmm`, `GMT`/`UT`/`UTC`, 미국 약어)가 있으면 그것을 따른다.
+- 없으면 소스의 `naive_date_offset`(`"+09:00"`)으로 읽는다. 인공지능신문이 시간대 없는
+  KST 를 준다. 설정이 없으면 UTC 로 읽고 `[warn]` 과 `FeedResult.warning` 에 건수를 남긴다.
+- IANA 이름(`Asia/Seoul`)을 쓰지 않는 이유: Windows 에서 `tzdata` 의존성이 필요하고,
+  대상 소스가 모두 일광절약시간 없는 KST 다.
+
+## 수집을 멈춘 소스 (`sources.retired`, D-105)
+
+**수집하지 않는다** — `rss_sources` / `collect` 는 보지 않는다. 제외는 앞으로만이라 이미
+들어온 골든셋·노트·보존소 항목은 그대로이고, `eval.predict` 가 골든셋 URL 의 호스트로
+소스 이름을 유도할 때 `retired_sources` 를 같이 본다. 지우면 GeekNews 골든셋 2건의
+재추출이 "소스를 찾을 수 없다"로 멈춘다.
+
 ## 규칙
 - **요약하거나 분류하지 않는다.** LLM 호출은 이 레이어에 없다.
 - 소스 추가는 코드가 아니라 `config.yaml` 수정으로 끝나야 한다.
