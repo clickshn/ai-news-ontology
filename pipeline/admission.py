@@ -81,6 +81,9 @@ class SourceWindow:
     span_days: int
     anchor: date | None
     capped: bool
+    # 마지막 완결 뒤 미완결 실행들이 쓴 cutoff 중 가장 이른 것. 그 실행에서 미룬 항목이
+    # 받아들여질 수 있게 창이 여기까지는 내려간다 (ADR-023 Amendment 2).
+    carry_cutoff: date | None = None
 
     def contains(self, published_at: date | None) -> bool:
         """창 안인가. 발행일 미확정(없음·미래)은 안으로 친다 — 받아들일 수 있는 후보다."""
@@ -101,29 +104,67 @@ class SourceWindow:
             "span_days": self.span_days,
             "anchor": anchor,
             "capped": self.capped,
+            **({"carry_cutoff": self.carry_cutoff.isoformat()} if self.carry_cutoff else {}),
         }
 
 
-def source_window(policy: WindowPolicy, *, today: date, anchor: date | None) -> SourceWindow:
+def source_window(
+    policy: WindowPolicy, *, today: date, anchor: date | None, carry_cutoff: date | None = None
+) -> SourceWindow:
+    """창을 정한다. `carry_cutoff` 가 있으면 창은 **최소한 거기까지** 내려간다.
+
+    `capped` 는 필요한 cutoff 가 상한(`max_lookback_days`)보다 오래됐다는 뜻이다 — 받아야
+    할 항목을 실제로 거르고 있다. 미완결 실행 1회로 창이 넓어지는 것은 capped 가 아니다.
+    `NO_DRAINED_RUN` 에 `carry_cutoff` 가 없으면(옛 호출) 모르는 것이므로 상한까지 넓힌다.
+    """
     if anchor is None:
-        span, capped = policy.lookback_days, False
+        wanted = policy.lookback_days
+    elif anchor == NO_DRAINED_RUN:
+        wanted = policy.lookback_days if carry_cutoff is not None else policy.max_lookback_days + 1
     else:
-        since = (today - anchor).days if anchor != NO_DRAINED_RUN else policy.max_lookback_days + 1
-        wanted = max(policy.lookback_days, since + policy.overlap_days)
-        span, capped = min(wanted, policy.max_lookback_days), wanted > policy.max_lookback_days
-    return SourceWindow(today=today, cutoff=today - timedelta(days=span), span_days=span, anchor=anchor, capped=capped)
+        wanted = max(policy.lookback_days, (today - anchor).days + policy.overlap_days)
+    need = today - timedelta(days=wanted)
+    if carry_cutoff is not None:
+        need = min(need, carry_cutoff)
+    floor = today - timedelta(days=policy.max_lookback_days)
+    cutoff = max(need, floor)
+    return SourceWindow(
+        today=today, cutoff=cutoff, span_days=(today - cutoff).days, anchor=anchor,
+        capped=need < floor, carry_cutoff=carry_cutoff,
+    )
 
 
-def last_drained(runs_dir: Path | None, source_name: str, *, today: date, policy: WindowPolicy) -> date | None:
-    """이 소스의 마지막 완결 실행 날짜(UTC). 기록 자체가 없으면 None(첫 실행).
+@dataclass(frozen=True)
+class WindowHistory:
+    """이 소스의 실행 기록에서 창에 필요한 것."""
 
-    기록은 있는데 창 상한 안에 완결 실행이 없으면 `NO_DRAINED_RUN` — 상한까지 넓힌다.
-    상한보다 오래된 실행은 창 길이에 영향이 없으므로 거기서 읽기를 멈춘다.
+    seen: bool
+    drained_on: date | None
+    carry_cutoff: date | None
+
+    @property
+    def anchor(self) -> date | None:
+        if self.drained_on is not None:
+            return self.drained_on
+        return NO_DRAINED_RUN if self.seen else None
+
+
+def window_history(runs_dir: Path | None, source_name: str, *, today: date, policy: WindowPolicy) -> WindowHistory:
+    """최신부터 거슬러 올라가 마지막 완결 실행과, 그 뒤 미완결 실행들의 가장 이른 cutoff 를 찾는다.
+
+    미완결 실행이 미룬 항목은 **그 실행의 창**으로 받아들여진 것들이다. 다음 창이 그 cutoff
+    보다 위로 올라가면 미룬 항목이 창 밖으로 밀려난다. 예전 규칙은 이걸 "완결 없음 → 상한
+    14일"로 막았는데, 미완결 1회만으로 창이 14일이 되고 `window_capped`(심각)이 떴다
+    (session-18, OpenAI). 그리고 완결 기준점이 있을 때는 오히려 못 막았다 — 기준점 이후의
+    미완결 실행이 더 이른 cutoff 를 썼을 수 있다.
+
+    이미 상한 너머로 내려간 cutoff 를 찾으면 더 읽어도 결론(capped)이 같으므로 멈춘다.
     """
     if runs_dir is None or not runs_dir.exists():
-        return None
-    floor = today - timedelta(days=policy.max_lookback_days + policy.overlap_days)
+        return WindowHistory(False, None, None)
+    floor = today - timedelta(days=policy.max_lookback_days)
     seen = False
+    carry: date | None = None
     for path in sorted(runs_dir.glob("pipeline-*.json"), reverse=True):
         try:
             record = (json.loads(path.read_text(encoding="utf-8")).get("window") or {}).get(source_name)
@@ -132,13 +173,28 @@ def last_drained(runs_dir: Path | None, source_name: str, *, today: date, policy
         if not record:
             continue
         seen = True
-        run_day = date.fromisoformat(record["today"])
-        if run_day < floor:
-            break
         # `window_drained` 가 생기기 전의 기록은 `drained` 가 같은 뜻(게이트 쪽 완결)이다.
         if record.get("window_drained", record.get("drained")):
-            return run_day
-    return NO_DRAINED_RUN if seen else None
+            return WindowHistory(True, date.fromisoformat(record["today"]), carry)
+        if record.get("cutoff"):
+            cutoff = date.fromisoformat(record["cutoff"])
+            carry = cutoff if carry is None else min(carry, cutoff)
+            if carry < floor:
+                break
+    return WindowHistory(seen, None, carry)
+
+
+def last_drained(runs_dir: Path | None, source_name: str, *, today: date, policy: WindowPolicy) -> date | None:
+    """이 소스의 마지막 완결 실행 날짜(UTC). 기록 자체가 없으면 None(첫 실행).
+
+    기록은 있는데 상한 안에 완결 실행이 없으면 `NO_DRAINED_RUN`. 창은 `window_history` 로
+    정한다 — 이 함수는 기준점만 본다.
+    """
+    history = window_history(runs_dir, source_name, today=today, policy=policy)
+    limit = today - timedelta(days=policy.max_lookback_days + policy.overlap_days)
+    if history.drained_on is not None and history.drained_on >= limit:
+        return history.drained_on
+    return NO_DRAINED_RUN if history.seen else None
 
 
 class Admission:

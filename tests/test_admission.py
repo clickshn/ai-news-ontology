@@ -18,6 +18,7 @@ from pipeline.admission import (
     check_silence,
     last_drained,
     source_window,
+    window_history,
     window_policy,
 )
 
@@ -109,6 +110,22 @@ class TestWindowDrainedField:
         record = {"window": {"A": {"today": _days_ago(2).isoformat(), "drained": False, "window_drained": True}}}
         (runs / "pipeline-20260927-090000.json").write_text(json.dumps(record), encoding="utf-8")
         assert last_drained(runs, "A", today=TODAY, policy=POLICY) == _days_ago(2)
+
+    def test_earliest_carried_cutoff_wins(self, tmp_path):
+        """미완결 실행이 여럿이면 가장 이른 cutoff 까지 내려가야 모든 미룬 항목이 남는다.
+
+        새 규칙에서는 cutoff 가 이어져 내려가므로 보통 같지만, 옛 기록·손으로 고친 기록은 다르다.
+        """
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        for name, day, cutoff in [("20260926-090000", 3, 10), ("20260928-090000", 1, 8)]:
+            record = {"window": {"A": {"today": _days_ago(day).isoformat(), "cutoff": _days_ago(cutoff).isoformat(),
+                                       "window_drained": False}}}
+            (runs / f"pipeline-{name}.json").write_text(json.dumps(record), encoding="utf-8")
+
+        history = window_history(runs, "A", today=TODAY, policy=POLICY)
+
+        assert history.carry_cutoff == _days_ago(10) and history.drained_on is None and history.seen
 
     def test_contains_agrees_with_check(self):
         window = source_window(POLICY, today=TODAY, anchor=None)

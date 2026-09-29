@@ -76,9 +76,9 @@ from pipeline.admission import (
     Admission,
     WindowPolicy,
     check_silence,
-    last_drained,
     source_window,
     today_utc,
+    window_history,
     window_policy,
 )
 from pipeline.backlog import HEAD_SIZE, find_evictions, previous_backlog
@@ -645,8 +645,8 @@ def _check_silence(
 def _admission(policy: WindowPolicy | None, runs_dir: Path | None, source_name: str, *, today: date) -> Admission | None:
     if policy is None:
         return None
-    anchor = last_drained(runs_dir, source_name, today=today, policy=policy)
-    window = source_window(policy, today=today, anchor=anchor)
+    history = window_history(runs_dir, source_name, today=today, policy=policy)
+    window = source_window(policy, today=today, anchor=history.anchor, carry_cutoff=history.carry_cutoff)
     if window.capped:
         print(
             f"[warn] {source_name}: 창이 상한 {policy.max_lookback_days}일에 걸렸다"

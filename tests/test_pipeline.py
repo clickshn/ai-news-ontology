@@ -834,3 +834,51 @@ class TestRunRecordsQualityBaseline:
     def test_without_a_window_the_whole_feed_is_measured(self, env):
         report = env["run"]()
         assert report.inputs[GEEK]["items"] == report.inputs[GEEK]["feed_items"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 창은 미룬 항목이 쓴 cutoff 를 지킨다 · 넓어진 것과 상한에 걸린 것은 다르다 (ADR-023 Amendment 2)
+# ---------------------------------------------------------------------------
+class TestCarriedCutoff:
+    def test_one_undrained_run_does_not_jump_to_the_cap(self, windowed):
+        """session-18 OpenAI: 미완결 1회로 창이 14일이 되고 window_capped(심각)이 떴다."""
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 1}, extract={GEEK: 10}, today=TODAY, report=_report(1))
+
+        report = windowed["run"](gate={GEEK: 10}, extract={GEEK: 10}, today=TODAY + timedelta(days=1), report=_report(2))
+
+        window = report.window[GEEK]
+        assert window["cutoff"] == "2026-09-22" and window["span_days"] == 8
+        assert not window["capped"]
+        assert window["carry_cutoff"] == "2026-09-22"
+        kinds = {e["kind"] for e in A.events_from_report(report.to_dict())}
+        assert A.WINDOW_CAPPED not in kinds
+
+    def test_deferred_item_stays_admissible_after_a_drained_anchor(self, windowed):
+        """예전 규칙의 구멍: 완결 기준점이 있으면 그 뒤 미완결 실행의 더 이른 cutoff 를 몰랐다."""
+        windowed["feeds"][GEEK] = []
+        windowed["run"](today=TODAY, report=_report(1))  # 완결 (09-29)
+
+        day2 = TODAY + timedelta(days=1)
+        edge = _dated(7, 6)  # day2 기준 7일 전 = 09-23, day2 창(7일)의 맨 끝
+        windowed["feeds"][GEEK] = [_dated(8, 0), edge]
+        windowed["run"](gate={GEEK: 1}, extract={GEEK: 10}, today=day2, report=_report(2))  # edge 를 미룸
+
+        day4 = TODAY + timedelta(days=3)  # 기준점 09-29 → 예전 규칙이면 cutoff 09-25 로 edge 를 거른다
+        report = windowed["run"](gate={GEEK: 10}, extract={GEEK: 10}, today=day4, report=_report(3))
+
+        assert report.window[GEEK]["cutoff"] == "2026-09-23"
+        assert report.sources[GEEK]["out_of_window"] == 0
+        assert report.sources[GEEK]["gate_calls"] == 1
+
+    def test_a_persisting_undrained_state_is_capped(self, windowed):
+        """넓어진 상태가 **지속돼** 필요한 cutoff 가 14일 너머로 가면 그때 capped(심각)."""
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 1}, extract={GEEK: 10}, today=TODAY, report=_report(1))
+
+        still = windowed["run"](gate={GEEK: 0}, extract={GEEK: 10}, today=TODAY + timedelta(days=6), report=_report(2))
+        assert not still.window[GEEK]["capped"]  # 필요한 cutoff 09-22 = 10-05 − 13일
+
+        report = windowed["run"](gate={GEEK: 0}, extract={GEEK: 10}, today=TODAY + timedelta(days=8), report=_report(3))
+        assert report.window[GEEK]["capped"] and report.window[GEEK]["span_days"] == 14
+
