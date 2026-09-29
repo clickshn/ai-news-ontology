@@ -90,6 +90,9 @@ MARA export 의 입력에도 그대로 쌓인다.
 | `3` | 부분 실패 — 산출이 있거나, **소스 단위 실패(수집 실패 · 갱신 멈춤)만 있고 다른 소스는 정상으로 받았다** |
 | `1` | 실행이 제 역할을 못 했다 — 모든 소스가 소스 단위 실패, 또는 LLM·적재 실패가 있는데 산출 0건 |
 | `2` | 인자 오류 |
+| `4` | (`scheduled`) **가부 불일치** — 상시 승인과 다르다. LLM 0건, 전 단계 정지 (ADR-025) |
+| `5` | (`scheduled`) **환경 미준비** — 엔드포인트에 TCP 로 닿지 않았다. 차단기와 별개 |
+| `6` | (`scheduled`) 잠금 보유 중 — 다른 실행이 돌고 있다 |
 
 실행 요약은 `data/pipeline/runs/{run_id}.json`. 소스별 수집 결과는 `fetch` 에
 `status`(`ok` · `empty` · `http_error` · `timeout` · `network_error` · `too_large` ·
@@ -100,6 +103,27 @@ MARA export 의 입력에도 그대로 쌓인다.
 `1` 을 내지 않는 이유: 그러면 "소스 하나 장애"와 "전부 장애"가 같은 코드가 된다 —
 수집기에서 가른 혼동을 종료 코드에서 다시 만드는 셈이다.
 
+## 매일 자동 실행 (ADR-025)
+
+```
+python -m pipeline approve-schedule     # 사람만. 대화형 터미널. 6항목 확인 + 노트 3건 원문 대조
+python -m pipeline scheduled            # 작업 스케줄러가 부른다 (scripts/register-scheduled-task.ps1)
+```
+
+    잠금 → 사전 점검(가부) → 준비 확인(TCP) → run_pipeline → 경보 누적 → 상태 노트 · 상태 파일 · 토스트
+
+- **config 상한은 승인이 아니다.** `scheduled` 는 `.claude/scheduled-run-approved.json` 과
+  provider · 해석된 엔드포인트 URL 해시 · 모델 · 프롬프트 · 소스 · 상한 · 목적지 결정 코드
+  해시를 대조하고, 벤더 승인 파일이 남아 있으면 그것만으로 멈춘다 (`pipeline/approval.py`).
+- **환경 미준비 ≠ 장애.** 준비 확인은 TCP 연결만 한다(HTTP·페이로드 없음). 대기 시간은
+  `config.yaml: schedule.readiness`. 연결된 뒤의 전송 오류는 지금처럼 차단기다.
+- **경보는 실행 요약의 구조화 값에서 뽑는다** (`pipeline/alerts.py`). `data/pipeline/alerts.json`
+  에 누적되고 연속 횟수로 등급이 오른다. 이번 실행이 평가하지 않은 종류는 닫지 않는다.
+- **닿는 곳:** Vault `_pipeline-status.md`(유일한 비뉴스 파일, 매 실행 덮어씀) · SessionStart 훅
+  (`.claude/hooks/pipeline-status.sh`, **실행 부재를 여기서 잰다**) · 심각 등급 토스트.
+- **품질 지표는 기록만** (`pipeline/quality.py`) — 본문 길이 중앙값, 게이트 통과율, 재시도율,
+  미등록 기업 비율, 분포. 임계값은 기록 2주 뒤.
+
 ## 테스트
 
-`tests/test_pipeline.py`. 피드·LLM·Vault 를 전부 갈아 끼우고 `tmp_path` 에만 쓴다.
+`tests/test_pipeline.py`, 자동 실행은 `tests/test_schedule.py`. 피드·LLM·Vault 를 전부 갈아 끼우고 `tmp_path` 에만 쓴다.

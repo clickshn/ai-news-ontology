@@ -80,6 +80,30 @@
 2~6번(크기)은 전부 정확히 답변되고 승인까지 났지만 1번(가부)이 없어서 규칙 위반이
 게이트를 통과했다 (ADR-017).
 
+### 매일 자동 실행 — 상시 승인은 가부 항목의 고정이다 (ADR-025)
+
+자동 실행(`python -m pipeline scheduled`)은 6항목을 매번 묻지 않는다. 대신 **사람이 한 번
+답한 6항목을 코드가 매번 대조한다.**
+
+- **config 상한(`sources.rss[].limits`)은 승인이 아니다.** 크기 항목이다. 상한이 있다는
+  이유로 자동 실행을 승인된 것으로 읽지 않는다.
+- 승인은 `.claude/scheduled-run-approved.json` 이다. 목적지(해석된 엔드포인트 URL 해시) ·
+  소스 · 모델 · 프롬프트 · 상한 · 목적지 결정 코드 해시를 고정하고 **14일 뒤 만료**된다.
+  하나라도 다르면 자동 실행은 LLM 0건으로 멈추고(종료 코드 4) 알린다.
+- **기록은 사람이 `approve-schedule` 로 만든다. 에이전트는 만들지도 고치지도 않는다.**
+  TTY 요구가 비대화형 생성을 막지만 파일 편집은 막지 못한다 — 막는 것은 이 규칙이다.
+  `.claude/external-llm-approved` 와 달리 "승인받았으니 만든다"가 성립하지 않는다.
+- **상시 승인은 첫 전량 실행이 될 수 없다.** 현재 config 상한으로 한 수동 실행
+  (`pipeline run`, 인자 없음 — 일반 6항목 게이트로 승인)이 먼저 있어야 `approve-schedule`
+  이 받는다. 순서: 수동 전량 실행 → 결과 확인 → 상시 승인 → 작업 등록.
+- **갱신할 때마다 노트 3건을 원문과 대조한다.** 만료 기간이 "결과를 아무도 안 보는 기간"의
+  상한이다. 품질 지표로는 근거 없는 채움이 보이지 않는다 (D-107).
+- 대조 대상 파일(`pipeline/approval.py: GUARD_FILES`)을 고치면 다음 자동 실행이 멈춘다.
+  의도한 비용이다. 고친 뒤 재승인한다.
+- ⚠️ `GUARD_FILES` **밖**에 새 클라이언트 생성 경로가 생기면 이 대조는 잡지 못한다.
+  자동 실행에는 훅도 없다. 새 LLM 호출 지점을 만들면 `client_from_config` 를 거치게 한다.
+- 수동 `pipeline run` 은 여전히 **매 실행 6항목 게이트**다. 상시 승인은 `scheduled` 에만 쓴다.
+
 ### 규모가 큰 호출은 단계로 쪼갠다
 
 스키마·형식 결함은 표본 수에 비례해서 드러나지 않는다. 30건에서 안 걸리는 형식
@@ -106,7 +130,9 @@
 | `data/extractions/` | 추출 보존소 — 프롬프트 전문, 게이트 판정, 온톨로지 원본 | O (`data/`) |
 | `data/corpus/` | export 산출물 JSONL·manifest | O (`data/`) |
 | `data/replays/` | 대조 실행 산출물 — `rows.json`·`summary.json` 과 **`raw/` 아래의 LLM 원본 응답** (D-052) | O (`data/`) |
-| `data/pipeline/` | 파이프라인 원장(`ledger/`, doc_id 당 게이트 판정·**근거 문장**·오류 메시지·적재 상태)과 실행 요약(`runs/`) (ADR-022) | O (`data/`) |
+| `data/pipeline/` | 파이프라인 원장(`ledger/`, doc_id 당 게이트 판정·**근거 문장**·오류 메시지·적재 상태)과 실행 요약(`runs/`) (ADR-022) · 자동 실행의 **stdout·stderr 전문**(`runs/scheduled-*.log`), 누적 경보(`alerts.json`), 훅용 상태(`status.txt`) (ADR-025) | O (`data/`) |
+| `.claude/scheduled-run-approved.json` | 상시 승인 기록 — 엔드포인트 URL **해시**(URL 은 남기지 않는다), 승인·만료 시각, 대조한 doc_id | O |
+| Vault `_pipeline-status.md` | 경보·지표 요약. **LLM 출력 본문 없음.** Vault 에 쓰는 유일한 비뉴스 파일 (ADR-025) | — (Vault) |
 | `observability/logs/` | 게이트 스킵 기록, 미등록 기업 큐 | O (`logs/`) |
 | `eval/scores/` | judge 채점 결과, 골든셋 예측(`preds.jsonl`)과 그 메타 | O |
 | `eval/scores/raw/` | 골든셋 재추출의 **LLM 원본 응답** (`eval/predict.py`, D-052) · `judge-{run_id}/` 아래 **judge 원본 응답**, 실패 회차 포함 (`eval/runner.py`, D-092) | O |
