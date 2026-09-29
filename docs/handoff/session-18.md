@@ -4,7 +4,7 @@
 - **범위:** 수동 전량 실행(일반 6항목 게이트, 승인 90/41) → 결과 확인 → ① drained 정의 분리 · 밀려남 신호 · 상한 조정 · 수동 run 품질 · 창 안 본문 길이 → ② 별칭 큐 수정 → ③ 경보 등급을 피드 깊이로 · 창의 carry cutoff · 표본 피드 선언
 - **브랜치:** `feat/full-run-baseline`(4 커밋) → 그 위에 `feat/alert-premises`(+4). **main 병합·push 안 함** — `main..feat/alert-premises` 가 전부다
 - **테스트:** `.venv/Scripts/python.exe -m pytest tests/ -q` → **965 passed** (923 → +42). 변이 검사 11/11 · 18/18 (임시 복사본)
-- **LLM API 호출:** 게이트 **80** · 추출 **36** (재시도 0), 전부 내부 vLLM(`gemma-4-31B-it`). 승인 상한 90/41 안. 그 뒤 LLM 0건 (피드 GET 만)
+- **LLM API 호출:** 1차 게이트 **80** · 추출 **36** (승인 90/41) · 2차 게이트 **24** · 추출 **35** (승인 100/51). 재시도 0, 전부 내부 vLLM(`gemma-4-31B-it`)
 - **ADR (`adr-skill:adr-recorder`, 전부 Accepted — 사용자, 2026-09-29):** ADR-023 **Amendment 1**(완결 분리·밀려남) · **Amendment 2**(carry cutoff) · ADR-025 **Amendment 1**(깊이 기반 등급·표본 피드). 결정 로그 **D-111 ~ D-117**
 - **의존성:** 새로 추가 0개
 
@@ -34,6 +34,29 @@
 - AI타임스 미해결 기업 비율 0.76 의 원인은 괄호가 아니라 **사전 크기**(키 24개)
 
 **피드 깊이 실측 (GET 만):** arXiv **1.1시간**(20건) · AI타임스 **27.8시간**(50건) · MSR 60일 · NVIDIA 76일 · DeepMind 334일 · OpenAI 10년+. 레포에 적혀 있던 "AI타임스 2~3일치"는 실측이 아니었고, 그 숫자 위에 경보 등급이 서 있었다.
+
+## 1b. 두 번째 전량 실행 — 100/51, 새 코드 첫 실기 (`pipeline-20260929-162629`, 사용자 승인)
+
+| | 값 |
+|---|---|
+| 종료 코드 · 실패 | 0 · 0 · **198초** |
+| 호출 | 게이트 **24** (OpenAI 7 · NVIDIA 10 · AI타임스 7) · 추출 **35** · 재시도 0 |
+| 토큰 | 게이트 27.3k / 1.4k · 추출 115.2k / 8.9k — **합 약 143k / 10k** (예상 150k / 11k) |
+| Vault | 57 → 92 (**+35, 변경 0, 삭제 0**), 새 노트 35/35 에 `published_at` |
+
+- **이 실행이 `approve-schedule` 의 선행 조건이다** (`mode: config`, 상한 100/51 = 현재 config)
+- `depth_hours` 기록됨(AI타임스 28.4h · arXiv 1.1h + `feed_kind: sample`). `quality` 가 수동 run 요약에 들어갔다. 본문 길이는 창 안 기준 — **DeepMind 창 안 3건 중 2건이 0자(중앙값 0)**, 피드 전체 중앙값 97 이 가리고 있던 것
+- **`evicted_*` 는 0 — 첫 기록이라 셀 수 없었다.** 15:22 실행은 `backlog` 기록이 생기기 전이다. 그래서 실행 직전(16:26)에 원장·피드로 손으로 맞췄다(`scratchpad/reconstruct.py`, 읽기 전용):
+
+  | AI타임스 15:22 미룸 | 16:26 피드에 남음 | 이 실행에서 처리 | 잃음 |
+  |---|---|---|---|
+  | 게이트 7 (피드 맨 끝 = 가장 오래된 것) | 6 | **5** | **2** — 1건은 16:26 전, 1건(`news:787f11d9b7ae793f`)은 16:26 과 실행의 수집 사이에 밀려났다 |
+  | 추출 11 | 11 | **11** | 0 |
+
+  **한 시간 만에 게이트 대기 2건을 잃었다.** 피드 깊이 28시간은 "하루치"가 아니라 "한 시간에 2~3건씩 밀려나는 창"이다. 게이트 상한 50(D-112) 전이었으면 매일 이렇게 잃었다
+- 창 (B 적용 확인): OpenAI 7일 유지 · NVIDIA · AI타임스 14일이지만 **capped 아님**, `carry_cutoff = 2026-09-15` = 15:22 실행의 cutoff(옛 규칙 + session-16 소표본 미완결로 14일이었다). 이번 실행에서 **여섯 소스 전부 `window_drained: true`** → 다음 `plan` 에서 전부 **7일**로 돌아온 것까지 확인
+- `drained: false` 는 OpenAI(추출 대기 6) · NVIDIA(11) 둘 — 깊은 피드라 밀려나지 않는다. 다음 실행이 이 `backlog` 와 비교해 처음으로 `evicted_*` 를 셀 수 있다. AI타임스는 피드 50건이 전부 처리됨(보존 32 · 스킵 18)
+- arXiv: 원장의 추출 대기 1건(session-16 항목)은 피드에 없어 영영 처리되지 않는다 — `backlog` 이전의 손실이라 코드가 세지 못한 사례
 
 ## 2. 무엇을 바꿨나 (전부 사용자 결정)
 
@@ -65,7 +88,7 @@ b6461a1 chore(config): raise AI Times gate limit to feed depth and arXiv extract
 
 ## 4. 켜는 순서
 
-1. **100/51 수동 전량 실행** — 일반 6항목 게이트로 별도 승인 (**다음 할 일**). `approval.full_manual_run` 은 소스별 상한이 현재 config 와 **정확히 같은** `mode == "config"` 실행만 받는다 — 오늘의 90/41 실행은 인정되지 않는다(확인함). 새 코드의 첫 실기 검증이다: AI타임스 `evicted_*`(오늘의 미룬 7 · 11 과 비교), arXiv `feed_rollover` 가 tally 에만 남고 경보가 없는지, `depth_hours`, `carry_cutoff`, 수동 run 의 `quality`
+1. ✅ **100/51 수동 전량 실행 — 완료** (§1b). 아래는 당시 기록 — `approval.full_manual_run` 은 소스별 상한이 현재 config 와 **정확히 같은** `mode == "config"` 실행만 받는다 — 오늘의 90/41 실행은 인정되지 않는다(확인함). 새 코드의 첫 실기 검증이다: AI타임스 `evicted_*`(오늘의 미룬 7 · 11 과 비교), arXiv `feed_rollover` 가 tally 에만 남고 경보가 없는지, `depth_hours`, `carry_cutoff`, 수동 run 의 `quality`
 2. 브랜치 main ff 병합 (`GUARD_FILES` 인 `runner.py` · `schedule.py` 가 바뀌었다). push 는 사용자
 3. 사용자가 자기 터미널에서 `approve-schedule` (노트 3건 대조) — 병합 후
 4. `schedule.time` · `readiness.wait_minutes` → 5. `register-scheduled-task.ps1`
