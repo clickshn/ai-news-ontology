@@ -110,6 +110,11 @@ class TestWindowDrainedField:
         (runs / "pipeline-20260927-090000.json").write_text(json.dumps(record), encoding="utf-8")
         assert last_drained(runs, "A", today=TODAY, policy=POLICY) == _days_ago(2)
 
+    def test_contains_agrees_with_check(self):
+        window = source_window(POLICY, today=TODAY, anchor=None)
+        assert window.contains(_days_ago(7)) and not window.contains(_days_ago(8))
+        assert window.contains(None) and window.contains(TODAY + timedelta(days=5))
+
 
 class TestSilence:
     def test_old_newest_item_is_silent(self):

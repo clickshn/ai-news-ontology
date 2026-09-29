@@ -83,6 +83,7 @@ from pipeline.admission import (
 )
 from pipeline.backlog import HEAD_SIZE, find_evictions, previous_backlog
 from pipeline.ledger import DEFAULT_LEDGER_DIR, Ledger, LedgerEntry, now_iso
+from pipeline.quality import quality_metrics
 
 DEFAULT_RUNS_DIR = PROJECT_ROOT / "data" / "pipeline" / "runs"
 
@@ -309,8 +310,10 @@ class RunReport:
     inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     extracted_ids: dict[str, list[str]] = field(default_factory=dict)
     # 구조화 경보. stderr 는 자동 실행에서 아무도 안 본다 (ADR-025). 채우는 쪽은
-    # pipeline.schedule — `run` 은 비워 둔다.
+    # pipeline.schedule — `run` 은 비워 둔다 (누적 상태는 자동 실행의 것이다).
     alerts: list[dict[str, Any]] = field(default_factory=list)
+    # 품질 지표는 `run` 도 채운다. 기준선은 자동 실행을 켜기 **전에** 있어야 임계값을
+    # 정할 수 있다 — 자동 실행에서만 쌓으면 순서가 거꾸로다.
     quality: dict[str, Any] = field(default_factory=dict)
     finished_at: str | None = None
 
@@ -424,7 +427,13 @@ def run_llm_stages(
             print(f"[info] {source_name}: 0건 — 피드는 정상이고 항목이 없다", file=sys.stderr)
         _check_silence(config, source_name, items, today=today, tally=tally, report=report)
         admission = _admission(policy, runs_dir, source_name, today=today)
-        report.inputs[source_name] = body_stats(items)
+        # 본문 길이는 창 안 항목으로 잰다. 피드 전체로 재면 OpenAI 의 창 밖 1212건이
+        # 중앙값을 끌어서, "피드가 본문을 자르기 시작했다"는 신호가 옛 글에 묻힌다.
+        window = admission.window if admission is not None else None
+        report.inputs[source_name] = body_stats(
+            [i for i in items if window is None or window.contains(i.published_at)],
+            feed_items=len(items),
+        )
         feed_ids = [doc_id_for(str(item.url)) for item in items]
         previous = previous_backlog(runs_dir, source_name)
         deferred: dict[str, list[str]] = {"gate": [], "extraction": []}
@@ -569,17 +578,21 @@ def run_llm_stages(
     report.breaker_tripped = sorted(breaker.tripped)
 
 
-def body_stats(items: Sequence[RawItem]) -> dict[str, Any]:
+def body_stats(items: Sequence[RawItem], *, feed_items: int | None = None) -> dict[str, Any]:
     """소스 하나의 본문 길이. 피드가 조용히 본문을 자르기 시작하는 것의 사전 신호다
-    (인공지능신문 300자, D-107). 판정은 하지 않는다 — 기준선을 쌓는 중이다 (ADR-025)."""
+    (인공지능신문 300자, D-107). 판정은 하지 않는다 — 기준선을 쌓는 중이다 (ADR-025).
+
+    `items` 는 **창 안 항목**이다(창이 꺼져 있으면 전부). `feed_items` 는 피드 전체 건수로,
+    둘이 다르다는 것 자체가 기록할 값이다.
+    """
     lengths = sorted(len(item.body or "") for item in items)
-    if not lengths:
-        return {"items": 0, "body_chars_median": None, "body_empty": 0}
-    return {
-        "items": len(lengths),
-        "body_chars_median": lengths[len(lengths) // 2],
-        "body_empty": sum(1 for n in lengths if n == 0),
-    }
+    stats: dict[str, Any] = {"items": len(lengths), "body_chars_median": None, "body_empty": 0}
+    if lengths:
+        stats["body_chars_median"] = lengths[len(lengths) // 2]
+        stats["body_empty"] = sum(1 for n in lengths if n == 0)
+    if feed_items is not None:
+        stats["feed_items"] = feed_items
+    return stats
 
 
 def _record_backlog(
@@ -795,6 +808,7 @@ def run_pipeline(
             report=report,
             rewrite_missing=rewrite_missing,
         )
+        report.quality = quality_metrics(report.to_dict(), store)
     finally:
         write_report(report, runs_dir)
     return report

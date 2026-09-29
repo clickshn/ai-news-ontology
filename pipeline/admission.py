@@ -82,6 +82,12 @@ class SourceWindow:
     anchor: date | None
     capped: bool
 
+    def contains(self, published_at: date | None) -> bool:
+        """창 안인가. 발행일 미확정(없음·미래)은 안으로 친다 — 받아들일 수 있는 후보다."""
+        if published_at is None or published_at > self.today + timedelta(days=1):
+            return True
+        return published_at >= self.cutoff
+
     def summary(self) -> dict[str, Any]:
         if self.anchor is None:
             anchor = None

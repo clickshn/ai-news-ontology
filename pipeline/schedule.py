@@ -56,7 +56,6 @@ from pipeline import alerts as A
 from pipeline import approval as P
 from pipeline import notify as N
 from pipeline.ledger import Ledger, now_iso
-from pipeline.quality import quality_metrics
 from pipeline.runner import (
     DEFAULT_RUNS_DIR,
     RunReport,
@@ -294,7 +293,6 @@ def _run_locked(
 
     run_dict = report.to_dict()
     events += A.events_from_report(run_dict)
-    report.quality = quality_metrics(run_dict, store)
     code = report.exit_code()
     outcome = {0: "정상", 3: "부분 실패", 1: "실패"}.get(code, str(code))
     return _finish(config, cfg, report, events, evaluated, paths=paths, output_dir=output_dir,

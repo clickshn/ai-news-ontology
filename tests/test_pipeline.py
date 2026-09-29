@@ -812,3 +812,25 @@ class TestDrainedMeansNothingDeferred:
         report = windowed["run"](gate={GEEK: 1}, extract={GEEK: 10}, today=TODAY, report=_report(1))
         assert report.window[GEEK]["drained"] is False and report.window[GEEK]["window_drained"] is False
 
+
+class TestRunRecordsQualityBaseline:
+    def test_manual_run_writes_quality_metrics(self, env):
+        """기준선은 자동 실행을 켜기 전에 있어야 한다 — 수동 run 도 기록한다."""
+        report = env["run"]()
+        saved = json.loads((env["runs"] / f"{report.run_id}.json").read_text(encoding="utf-8"))
+        assert saved["quality"][GEEK]["extracted"] == 3
+        assert saved["alerts"] == []  # 경보 누적은 자동 실행의 것이다
+
+    def test_body_length_is_measured_inside_the_window(self, windowed):
+        """OpenAI 의 창 밖 1212건이 중앙값을 끌던 것."""
+        long_new = _dated(1, 0).model_copy(update={"body": "x" * 500})
+        old = [_dated(n, 300).model_copy(update={"body": ""}) for n in range(2, 6)]
+        windowed["feeds"][GEEK] = [long_new, *old]
+
+        report = windowed["run"](today=TODAY)
+
+        assert report.inputs[GEEK] == {"items": 1, "body_chars_median": 500, "body_empty": 0, "feed_items": 5}
+
+    def test_without_a_window_the_whole_feed_is_measured(self, env):
+        report = env["run"]()
+        assert report.inputs[GEEK]["items"] == report.inputs[GEEK]["feed_items"] == 3
