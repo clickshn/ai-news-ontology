@@ -69,6 +69,10 @@ config 상한(ADR-023)으로 `pipeline run` 이 인자 없이 도는 상태가 �
      - `stale_feed` 는 첫 발생부터 경고 (`max_silence_days` 가 이미 지연을 담고 있다)
      - `drained=false` 연속 = 경고, `capped` = 심각 (14일 상한에 닿으면 유실이 시작된다)
      - 환경 미준비 연속 2회 = 심각 (같은 피드 깊이 이유)
+
+     > ⚠️ **정정 (2026-09-29, 아래 Amendment 1).** `source_error` · `breaker` · 환경 미준비의
+     > 횟수 기준은 "AI타임스 약 3일치" 전제였고 실측은 27.8시간이다. 이 셋의 등급은 이제
+     > **잃기까지의 여유**로 정한다. `capped` 의 뜻은 ADR-023 Amendment 2 로 좁혀졌다.
      - 격리 건수 증가 = 경고
      - 가부 불일치 = 항상 심각
   7. **닿는 경로 세 개.**
@@ -93,7 +97,7 @@ config 상한(ADR-023)으로 `pipeline run` 이 인자 없이 도는 상태가 �
 
 ## Evidence
 
-- **Production Data:** AI타임스(gn) 피드는 최근 50건(약 2~3일치)만 주고 하루 신규는 약 38건, config 게이트 상한은 40이다 (session-16 실측, `config.yaml` 주석). 수집 실패 3회 연속과 `capped` 를 심각으로 두는 근거다.
+- **Production Data:** AI타임스(gn) 피드는 최근 50건(약 2~3일치)만 주고 하루 신규는 약 38건, config 게이트 상한은 40이다 (session-16 실측, `config.yaml` 주석). 수집 실패 3회 연속과 `capped` 를 심각으로 두는 근거다. ⚠️ **"약 2~3일치"는 실측이 아니었다** — 2026-09-29 실측 27.8시간 (Amendment 1)
 - **Production Data:** 300자 본문 소스(인공지능신문)는 소표본 추출 2건 중 필드 2개가 본문 근거 없이 채워졌고, 562자 소스는 잘림을 유보했다 (session-16 §7, D-107). 분포 지표가 아니라 사람 대조가 필요한 근거이고, 본문 길이 중앙값을 품질 지표 1순위에 두는 근거다.
 
 ## Alternatives
@@ -180,12 +184,99 @@ config 상한(ADR-023)으로 `pipeline run` 이 인자 없이 도는 상태가 �
 - **Rollback:** 작업 스케줄러 작업을 지우면 자동 실행이 멈춘다. `pipeline run` 은 이 결정과 무관하게 그대로다. Vault 의 `_pipeline-status.md` 는 지워도 다른 노트에 영향이 없다
 - **Migration Cost:** Low
 
+---
+
+## Amendment 1 — 수집이 막힌 경보의 등급을 "잃기까지의 여유"로 정하고, 표본 피드를 선언으로 가른다 (2026-09-29)
+
+- **Status:** Accepted (사용자, 2026-09-29)
+- **Decision Source:** Human
+
+### Context
+
+**무엇이 틀렸나.** Decision 6 의 횟수 기준(`source_error` 3회 = 심각, 환경 미준비 2회 = 심각,
+`breaker` 3회 = 심각)은 "AI타임스 피드는 약 3일치"를 전제로 했다. 그 숫자는 실측이 아니라
+적어 둔 값이었고, 첫 수동 전량 실행(session-18)에서 잰 AI타임스 깊이는 **27.8시간**이었다 —
+하루만 못 돌아도 잃는데 경보는 사흘째에야 심각이 된다. 소스마다 깊이가 수천 배 달라서 한
+숫자로는 가를 수 없다.
+
+같은 측정에서 arXiv 피드 20건이 제출 **1.1시간치**라는 것도 드러났다. ADR-023 Amendment 1 의
+`feed_rollover` 경보가 arXiv 에서는 매일 뜬다 — 자동 실행 첫날부터 "무시해도 되는 경보"가
+생기고, 그게 쌓이면 경보 전체가 무시된다 (사용자).
+
+### Decision
+
+- **피드 깊이를 잰다.** 수집기가 `FeedResult.summary()` 에 `depth_hours`(가장 이른 ~ 가장 늦은 발행 시각, 시간)를 싣는다. `published_at` 이 날짜뿐이라 여기서만 시각으로 잰다. **`RawItem` 은 그대로다 — export 계약이 바뀌지 않는다**
+- **수집이 막힌 사건(`source_error` · `env_not_ready` · `breaker`)의 등급:**
+
+      여유 = 피드 깊이 − 마지막 성공 수집 이후 시간 − 실행 간격(24시간)
+
+  - 여유 ≤ 0 = **심각** — 다음 정기 실행 전에 사람이 돌리지 않으면 확실히 잃는다
+  - 여유가 있으면 1회 정보(`breaker` 는 경고), 2회 연속부터 경고 — 깊은 피드라도 죽은 소스는 문제다. 횟수로는 심각까지 가지 않는다
+  - `env_not_ready` · `breaker` 는 소스 전체에 걸리므로 **가장 빠듯한 활성 소스**로 잰다
+  - 깊이 기록이 없으면 Decision 6 의 횟수 규칙을 그대로 쓴다
+  - 사유에 소스 · 깊이 · 마지막 성공 이후 시간 · 판정을 한 줄로 붙이고, 누적 경보에 `loss` 로 남긴다
+- **표본 피드 선언 `sources.rss[].feed_kind: stream | sample`** (기본 stream, 모르는 값은 실행 전 오류). `sample` 은 "이 피드는 새 글 전부가 아니라 일부만 주도록 설계됐다"는 선언이다. 사용자 조건에 따라 **끄는 것과 끄지 않는 것을 여기와 config 주석에 명시한다:**
+
+  | | 표본 피드에서 |
+  |---|---|
+  | `feed_rollover` 경보 | **끈다** (넘김은 tally 에 남는다) |
+  | 수집 실패 등급의 깊이 계산 대상 | **뺀다** |
+  | `evicted_*` (우리가 상한으로 미룬 항목의 손실) | **끄지 않는다** |
+
+  지금은 arXiv 하나에만 붙인다. 테스트가 출하 config 에서 `sample` 이 arXiv 하나뿐임을 고정한다 — 플래그가 다른 소스에 번지면 그 소스의 넘김 손실이 조용히 사라지기 때문이다
+
+### Rationale
+
+1. 등급이 답해야 하는 질문은 "몇 번 실패했나"가 아니라 "**사람이 언제까지 손을 써야 잃지 않나**"다. 여유 ≤ 0 은 토스트가 필요한 바로 그 순간이다
+2. 표본 피드의 넘김은 설계된 동작이지 손실이 아니다. 매일 뜨는 경보는 그 소스만이 아니라 경보 전체를 무시하게 만든다. 반대로 우리가 미룬 항목의 손실은 표본 피드에서도 손실이므로 끄지 않는다
+3. 플래그는 "이 소스는 손실을 세지 않는다"를 config 에 박는 일이라, 범위를 문서와 테스트 양쪽에 고정한다 (사용자)
+
+### Evidence
+
+- **Production Data:** 피드 깊이 (2026-09-29, GET 만): arXiv 1.1시간(20건, 최근 24시간 20건) · AI타임스 27.8시간(50건, 31건) · Microsoft Research 60일(10건) · NVIDIA Developer 76일(100건) · DeepMind 334일(100건) · OpenAI 10년+(1234건)
+- **Experiment:** 새 규칙으로 AI타임스는 어제 성공 후 오늘 실패 시 여유 27.8 − 24 − 24 = −20.2 → **첫 회 심각**. NVIDIA 는 3일 실패해도 여유 +1718 → 정보·경고. 테스트 965 passed, 변이 검사 18/18 (임시 복사본)
+
+### Alternatives
+
+#### 횟수 규칙을 두고 숫자만 조정
+
+- **Pros:** 구현이 없다
+- **Cons:** 소스마다 깊이가 1시간 ~ 10년이다
+- **Rejected because:** 한 숫자로는 얕은 피드의 손실과 깊은 피드의 일시 장애를 가를 수 없다
+
+#### arXiv `max_results` 를 올려 표본이 아니게 만든다
+
+- **Pros:** 플래그가 필요 없다
+- **Cons:** 게이트 호출이 약 10배가 된다
+- **Rejected because:** "얼마나 많이 다룰 것인가"는 주제 범위 판단이다 (사용자)
+
+#### 표본 피드도 깊이 계산에 넣는다
+
+- **Pros:** 예외가 없다
+- **Cons:** arXiv 깊이 1.1시간이 가장 빠듯한 소스가 된다
+- **Rejected because:** `env_not_ready` · `breaker` 가 매번 심각이 된다
+
+### Consequences
+
+- **Positive:** 얕은 피드의 수집 실패가 첫 회에 토스트로 닿는다. 깊은 피드의 일시 장애가 심각으로 부풀지 않는다. arXiv 의 설계된 넘김이 매일 경보를 만들지 않는다
+- **Negative:** 등급이 실행 요약 이력(마지막 성공 · 깊이)에 의존한다 — 요약을 지우면 횟수 규칙으로 돌아간다. 실행 간격을 24시간 상수로 둔다(`schedule.time` 이 하루 한 번이다)
+- **Risks:** 깊이는 **마지막 성공 수집 때의 값**이다. 피드가 그 사이 얕아지면(건수 축소) 여유를 과대평가한다. `feed_kind: sample` 을 새 소스에 붙이면 그 소스의 넘김 손실이 경보 없이 사라진다 — 테스트가 막지만 테스트를 고치면 뚫린다
+
+### Implementation
+
+- [x] `collectors/rss.py`: `_entry_moment` · `FeedResult.depth_hours`
+- [x] `pipeline/alerts.py`: `last_depths` · `loss_clock` · `attach_loss_clocks` · `severity(…, loss)` · 표본 피드의 넘김 경보 제외
+- [x] `pipeline/schedule.py`: `_finish` 에서 여유를 붙인 뒤 누적 · `depth_sources`
+- [x] `pipeline/runner.py`: `feed_kind` 검증과 요약 기록
+- [x] `config.yaml`: `feed_kind` 설명(끄는 것 / 끄지 않는 것) · arXiv `feed_kind: "sample"`
+
 ## Review Trigger
 
 - ⚠️ **실제 자동 실행으로 아직 검증되지 않았다 — 첫 스케줄 실행 후 재확인한다** (사용자, Accepted 조건). Accepted 시점의 검증은 목 기반 테스트와 승인 기록 없이 돌린 실기 스모크(종료 코드 4 경로) 하나뿐이다. 통과 경로(사전 점검 통과 → 준비 확인 → 실행 → 경보 해소)와 환경 미준비 경로는 실기에서 한 번도 돌지 않았다. 첫 스케줄 실행 뒤 상태 노트·상태 파일·토스트·실행 요약을 보고 이 줄을 갱신한다
 - 품질 지표 임계값은 기록 2주 뒤에 정한다 (Implementation 후속)
+- **Status of this ADR:** **Accepted 유지 — Decision 6 의 수집 실패·환경 미준비·차단기 등급과 피드 깊이 서술은 Amendment 1 로 정정됐다.** 상시 승인·대조·전달 결정은 그대로다
 
 ## References
 
 - **Related ADR:** ADR-017 (벤더 호출 게이트, 경고만 두는 안 기각) · ADR-018 (내부 vLLM 이전) · ADR-022 (재시도 지점 · 종료 코드) · ADR-023 (config 상한 · `max_silence_days`) · ADR-010 (Vault 충돌 정책) · MARA ADR-021
-- **Documentation:** `docs/governance.md` "승인 게이트", "새 게이트를 만들 때" · `docs/handoff/session-16.md` §6 · D-087 · D-093 · D-103 · D-104 · D-107
+- **Documentation:** `docs/governance.md` "승인 게이트", "새 게이트를 만들 때" · `docs/handoff/session-16.md` §6 · D-087 · D-093 · D-103 · D-104 · D-107 · **D-115 · D-117 (Amendment 1)** · `docs/handoff/session-18.md`

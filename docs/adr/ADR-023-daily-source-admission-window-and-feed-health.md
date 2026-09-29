@@ -39,6 +39,7 @@ session-15 에서 오케스트레이션이 섰고, 이제 매일 도는 것을 �
 - **Implementation:**
   - **창:** `cutoff = today_utc - span`. 기준점(anchor)이 없으면(첫 실행) `span = lookback_days`, 있으면 `span = min(max(lookback_days, (today - anchor) + overlap_days), max_lookback_days)`. 상한에 걸리면 `[warn]` 과 `window_capped` 를 요약에 남긴다. 값은 `pipeline.window` 의 7 / 1 / 14
   - **기준점:** **소스별로** 실행 요약(`data/pipeline/runs/*.json`)에서 가장 최근의 **완결 실행**. 완결은 수집이 실패하지 않았고, 창을 통과한 항목 중 상한·차단기로 미룬 것(`deferred_gate`)과 미확정 초과분이 0 인 실행이다. 미룬 항목이 있으면 기준점이 앞으로 가지 않아, 그 항목들이 창 밖으로 밀려나지 않는다
+    > ⚠️ **정정 (2026-09-29, 아래 Amendment 2).** 기준점만으로는 미룬 항목을 지키지 못했고, 완결 실행이 없을 때 곧장 상한(14일)으로 넓혔다. 창은 이제 **미완결 실행이 쓴 가장 이른 cutoff** 까지 내려가고, `capped` 는 그 cutoff 가 상한 너머일 때만이다
   - **발행일이 없거나 믿을 수 없는 항목:** `published_at` 이 없거나 `today_utc + 1일` 보다 뒤이면 "미확정"이다. 창 판정 없이 피드 순서 앞에서부터 소스당 `undated_max_per_run`(5)건까지 받고, 나머지는 `undated_deferred` 로 센다
   - **시간대:** 발행일 원문에 오프셋(`Z`, `±hh:mm`, `±hhmm`, `GMT`/`UT`/`UTC`, 미국 시간대 약어)이 있으면 그것을 따른다. 없으면 소스의 `naive_date_offset` 으로 해석하고, 설정이 없으면 **UTC 로 읽되 `FeedResult.warning` 에 건수를 남긴다.** `published_at` 은 모든 소스에서 **UTC 날짜**다
   - **실행당 상한:** `sources.rss[].limits.{gate,extract}`. `pipeline plan/run` 에 `--gate-limit` / `--extract-limit` 이 하나도 없으면 config 상한으로 7개 소스 전부를 돌고, **하나라도 있으면 config 상한 전체를 무시하고 CLI 값만 쓴다**(주지 않은 단계는 0). 전역 천장 기본값은 여전히 소스별 합이고(D-102), 코드의 절대 천장은 게이트 200 / 추출 100 으로 올린다
@@ -221,12 +222,76 @@ session-15 에서 오케스트레이션이 섰고, 이제 매일 도는 것을 �
 - [x] 테스트 15건 + 변이 검사 11/11 (임시 복사본)
 - [x] `config.yaml`: AI타임스 `gate: 50` · arXiv `extract: 20` · 피드 깊이 주석 정정
 
+---
+
+## Amendment 2 — 창은 미룬 항목이 쓴 cutoff 를 지키고, "넓어진 것"과 "상한에 걸린 것"을 가른다 (2026-09-29)
+
+- **Status:** Accepted (사용자, 2026-09-29)
+- **Decision Source:** Human
+
+### Context
+
+**무엇이 틀렸나 (둘).**
+
+1. **완결 실행이 없으면 곧장 상한.** 기록은 있는데 창 상한 안에 완결 실행이 없으면 `NO_DRAINED_RUN` 으로 보고 창을 14일로 넓혔다. 첫 수동 전량 실행에서 OpenAI 는 미룬 게이트 6건으로 미완결 1회였을 뿐인데, 다음 `plan` 에서 창이 7일 → 14일(상한)이 되어 `window_capped`(심각) 조건에 들었고 게이트 대상이 16 → 17 로 늘었다. **넓어진 것 자체**가 심각으로 읽혔다
+2. **완결 기준점이 있으면 오히려 못 지켰다.** 기준점 이후의 미완결 실행은 더 이른 cutoff 로 항목을 받아 미뤘을 수 있는데, 다음 창은 기준점만 보고 그보다 위로 올라갔다. 미룬 항목이 창 밖으로 밀려나 `out_of_window` 로 조용히 사라진다(테스트로 재현)
+
+미룬 항목이 필요로 하는 것은 "그것을 받아들였던 창의 cutoff" 하나다. 사용자 판단: 심각한 것은 **넓어진 상태가 지속되는 것**이지 넓어진 것 자체가 아니다.
+
+### Decision
+
+- `window_history` 가 실행 요약을 최신부터 읽어 **마지막 완결 실행**(`window_drained`)과, **그 뒤 미완결 실행들이 쓴 cutoff 중 가장 이른 것**(`carry_cutoff`)을 찾는다. 찾은 cutoff 가 이미 상한 너머면 더 읽지 않는다
+- 창:
+
+      need   = min(기존 규칙의 cutoff, carry_cutoff)      # 기준점 없음 + 기록 있음이면 기존 규칙은 lookback
+      cutoff = max(need, today − max_lookback_days)
+      capped = need < today − max_lookback_days
+
+  `capped` 는 **받아야 할 항목을 실제로 거르고 있다**는 뜻이 된다 — 미완결 상태가 상한(14일) 너머까지 지속됐을 때다. 등급(심각)은 그대로 둔다
+- 실행 요약 `window.<소스>` 에 `carry_cutoff` 를 남긴다. `last_drained` 는 기준점 조회로 남긴다. `carry_cutoff` 를 모르는 옛 호출(`NO_DRAINED_RUN` 만)은 모르는 것이므로 예전처럼 상한까지 넓힌다
+
+### Rationale
+
+1. 창을 넓히는 이유는 미룬 항목을 지키기 위해서이고, 그러려면 그 항목이 들어온 cutoff 만 지키면 된다. 그보다 넓히면 받을 이유 없는 옛 항목이 게이트로 간다(OpenAI +1)
+2. 넓어진 것과 상한에 걸린 것을 같은 심각으로 두면 미완결 1회마다 심각이 뜬다 — 자동 실행 첫날부터 "무시해도 되는 경보"가 된다 (사용자)
+
+### Evidence
+
+- **Production Data:** `pipeline-20260929-152223` 뒤 `plan`: OpenAI 창 2026-09-22~(7일) → 2026-09-15~(14일, 상한), `needs_gate` 16 → 17. NVIDIA · AI타임스도 session-16 소표본 실행이 미완결이라 첫 전량 실행부터 14일(상한)이었다
+- **Experiment:** 새 규칙으로 같은 상황의 다음 날 창은 2026-09-22~(8일), capped 아님. 기준점 뒤 미완결 실행이 미룬 항목(창 맨 끝, 09-23)은 예전 규칙이면 cutoff 09-25 로 걸러지고 새 규칙이면 09-23 으로 받아진다. 테스트 965 passed, 변이 검사 18/18
+
+### Alternatives
+
+#### 현행 — 완결 실행이 없으면 상한까지 넓히고 capped(심각)
+
+- **Pros:** 단순하다. 미룬 항목을 확실히 창 안에 둔다
+- **Cons:** 미완결 1회로 14일 + 심각. 기준점이 있을 때는 지키지 못한다
+- **Rejected because:** 넓어진 것과 잃고 있는 것을 가르지 못해 경보가 정상 상태가 된다
+
+#### `window_capped` 를 연속 N회로 등급화
+
+- **Pros:** 창 계산을 건드리지 않는다
+- **Cons:** 창은 여전히 14일로 넓어진다
+- **Rejected because:** 넓어지는 것 자체가 불필요한 게이트 호출을 부른다 — 등급만 낮추면 비용은 그대로다
+
+### Consequences
+
+- **Positive:** 미완결 1회로 창이 넓어지지 않고 심각도 뜨지 않는다. 기준점 뒤 미완결 실행이 미룬 항목도 지켜진다. `capped` 가 뜨면 실제로 거르고 있다는 뜻이다
+- **Negative:** 창이 실행 요약의 `cutoff` 기록에 더 의존한다 — 요약을 지우면 첫 실행처럼 7일로 돈다(예전과 같다)
+- **Risks:** 게이트 쪽 미완결이 매일 이어지면 `carry_cutoff` 가 고정된 채 창이 하루씩 넓어지다가 8일째에 capped 가 된다. 이건 의도한 동작이다(지속 = 심각)
+
+### Implementation
+
+- [x] `pipeline/admission.py`: `WindowHistory` · `window_history` · `source_window(…, carry_cutoff)` · `SourceWindow.carry_cutoff` · `last_drained` 를 `window_history` 위로
+- [x] `pipeline/runner.py`: `_admission` 이 `window_history` 를 쓴다
+- [x] 테스트: 미완결 1회로 상한에 가지 않음 · 기준점 뒤 미룬 항목이 창에 남음 · 지속되면 capped · 가장 이른 cutoff
+
 ## Review Trigger
 
 - **Recheck if:** `evicted_extraction` 이 AI타임스에서 수 회 기록된 뒤 — 추출 상한 15 를 정하는 근거로 쓰고, 그 결정 뒤 이 Amendment 를 다시 본다 (사용자)
-- **Status of this ADR:** **Accepted 유지 — "완결"의 정의와 한국 매체 피드 깊이 서술은 Amendment 1 로 정정됐다.** 창 결정 자체는 번복되지 않았다. 창 기준점의 정의도 그대로다(`window_drained`)
+- **Status of this ADR:** **Accepted 유지 — "완결"의 정의와 한국 매체 피드 깊이 서술은 Amendment 1 로 정정됐다.** 창 결정 자체는 번복되지 않았다. 창 기준점의 정의도 그대로다(`window_drained`). **창 길이 규칙과 `capped` 의 뜻은 Amendment 2 로 정정됐다** — 미완결 실행의 cutoff 를 지키고, capped 는 그것이 상한 너머일 때만
 
 ## References
 
 - **Related ADR:** ADR-022 (원장 · `doc_id` 중복 판정), ADR-005 (소스 구성과 본문 커버리지), ADR-025 (경보 누적 — Amendment 1 의 두 경보 종류가 여기에 들어간다)
-- **Documentation:** README 결정 로그 D-106(이 결정) · D-105(소스 재편) · D-102 · D-103 · D-104 · **D-111 · D-112 · D-113 (Amendment 1)**, `docs/handoff/session-16.md` · `docs/handoff/session-18.md`, `pipeline/admission.py` · `pipeline/backlog.py`
+- **Documentation:** README 결정 로그 D-106(이 결정) · D-105(소스 재편) · D-102 · D-103 · D-104 · **D-111 · D-112 · D-113 (Amendment 1)** · **D-116 (Amendment 2)**, `docs/handoff/session-16.md` · `docs/handoff/session-18.md`, `pipeline/admission.py` · `pipeline/backlog.py`

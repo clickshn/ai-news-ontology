@@ -63,7 +63,11 @@ MARA export 의 입력에도 그대로 쌓인다.
 | 첫 실행 (이 소스의 실행 기록 없음) | `lookback_days` (7) |
 | 매일 실행 | `lookback_days` (7) |
 | 마지막 완결 실행 뒤 N일 쉼 | `N + overlap_days`, 최대 `max_lookback_days` (14) |
-| 기록은 있는데 14일 안에 완결 실행이 없음 | 14 + `[warn]` + `capped` |
+| 마지막 완결 뒤 미완결 실행이 있음 | 위 규칙과 **미완결 실행이 쓴 가장 이른 cutoff**(`carry_cutoff`) 중 이른 쪽 |
+| 필요한 cutoff 가 14일 너머 | 14 + `[warn]` + `capped` — 미완결 상태가 **지속돼** 실제로 거르고 있다 |
+
+미완결 1회로 창을 14일로 넓히지 않는다. 미룬 항목에 필요한 것은 그것을 받았던 창의 cutoff
+하나다 (D-116, ADR-023 Amendment 2).
 
 - **기준점은 소스별 "마지막 완결 실행"이다** (`data/pipeline/runs/` 요약의 `window`).
   완결은 수집이 실패하지 않았고, 창을 통과한 항목 중 상한·차단기로 미룬 것
@@ -136,6 +140,11 @@ python -m pipeline scheduled            # 작업 스케줄러가 부른다 (scri
   `config.yaml: schedule.readiness`. 연결된 뒤의 전송 오류는 지금처럼 차단기다.
 - **경보는 실행 요약의 구조화 값에서 뽑는다** (`pipeline/alerts.py`). `data/pipeline/alerts.json`
   에 누적되고 연속 횟수로 등급이 오른다. 이번 실행이 평가하지 않은 종류는 닫지 않는다.
+- **수집이 막힌 경보(`source_error` · `env_not_ready` · `breaker`)는 잃기까지의 여유로 등급을 정한다**
+  (D-115). `여유 = 피드 깊이(depth_hours) − 마지막 성공 이후 − 24시간` 이 0 이하면 심각. 전역 종류는
+  가장 빠듯한 소스로 잰다. 깊이 기록이 없으면 횟수 규칙.
+- **`feed_kind: sample`**(arXiv 만, D-117): 끄는 것 — `feed_rollover` 경보, 깊이 계산 대상.
+  끄지 않는 것 — `evicted_*`. 다른 소스에 붙이면 그 소스의 넘김 손실이 조용히 사라진다.
 - **닿는 곳:** Vault `_pipeline-status.md`(유일한 비뉴스 파일, 매 실행 덮어씀) · SessionStart 훅
   (`.claude/hooks/pipeline-status.sh`, **실행 부재를 여기서 잰다**) · 심각 등급 토스트.
 - **품질 지표는 기록만** (`pipeline/quality.py`) — 본문 길이 중앙값, 게이트 통과율, 재시도율,
