@@ -517,3 +517,40 @@ def test_retired_sources_are_never_collected(fake_urlopen):
     assert [r.source_name for r in results] == ["Test Feed"]
     assert all("old.example" not in c["request"].full_url for c in calls)
     assert rss.retired_sources(config)[0]["name"] == "Old"
+
+
+# ---------------------------------------------------------------------------
+# 피드 깊이 (ADR-025 Amendment 1) — 수집 실패 경보의 등급이 이것으로 정해진다
+# ---------------------------------------------------------------------------
+def _two_item_feed(first: str, second: str) -> bytes:
+    item = FEED_XML.split(b"<item>")[1].split(b"</item>")[0]
+    other = item.replace(b"https://example.com/a", b"https://example.com/b").replace(
+        b"Mon, 21 Sep 2026 00:00:00 GMT", second.encode()
+    )
+    return FEED_XML.replace(b"Mon, 21 Sep 2026 00:00:00 GMT", first.encode()).replace(
+        b"</item>", b"</item><item>" + other + b"</item>", 1
+    )
+
+
+def test_depth_is_the_span_of_publication_times_in_hours(fake_urlopen):
+    """AI타임스 50건 = 27.8시간. `published_at` 은 날짜뿐이라 시각으로 따로 잰다."""
+    fake_urlopen(_FakeResponse(_two_item_feed("Tue, 29 Sep 2026 14:45:00 +0900", "Mon, 28 Sep 2026 10:57:00 +0900")))
+
+    fetched = rss.fetch_feed(SOURCE)
+
+    assert fetched.depth_hours == 27.8
+    assert fetched.summary()["depth_hours"] == 27.8
+
+
+def test_naive_times_use_the_source_offset_for_depth_too(fake_urlopen):
+    fake_urlopen(_FakeResponse(_two_item_feed("2026-09-29 14:45:00", "2026-09-29 13:45:00 +0000")))
+
+    fetched = rss.fetch_feed({**SOURCE, "naive_date_offset": "+09:00"})
+
+    assert fetched.depth_hours == 8.0  # KST 14:45 = UTC 05:45, UTC 13:45 과 8시간
+
+
+def test_one_dated_item_has_no_depth(fake_urlopen):
+    fake_urlopen(_FakeResponse(FEED_XML))
+    fetched = rss.fetch_feed(SOURCE)
+    assert fetched.depth_hours is None and "depth_hours" not in fetched.summary()

@@ -882,3 +882,59 @@ class TestCarriedCutoff:
         report = windowed["run"](gate={GEEK: 0}, extract={GEEK: 10}, today=TODAY + timedelta(days=8), report=_report(3))
         assert report.window[GEEK]["capped"] and report.window[GEEK]["span_days"] == 14
 
+
+# ---------------------------------------------------------------------------
+# 표본 피드 — 끄는 것과 끄지 않는 것 (ADR-025 Amendment 1)
+# ---------------------------------------------------------------------------
+class TestSampleFeed:
+    @pytest.fixture
+    def sample(self, windowed):
+        windowed["config"]["sources"]["rss"][0]["feed_kind"] = "sample"
+        return windowed
+
+    def test_rollover_is_recorded_but_not_alerted(self, sample):
+        sample["feeds"][GEEK] = [_dated(1, 0)]
+        sample["run"](today=TODAY, report=_report(1))
+        sample["feeds"][GEEK] = [_dated(9, 0)]
+
+        report = sample["run"](today=TODAY, report=_report(2))
+
+        assert report.sources[GEEK]["feed_rollover"] == 1  # 기록은 남는다
+        assert report.fetch[GEEK]["feed_kind"] == "sample"
+        assert A.FEED_ROLLOVER not in {e["kind"] for e in A.events_from_report(report.to_dict())}
+
+    def test_our_own_deferrals_are_still_alerted(self, sample):
+        """표본 피드라도 우리가 상한으로 미룬 것을 잃는 것은 손실이다."""
+        sample["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        sample["run"](gate={GEEK: 10}, extract={GEEK: 1}, today=TODAY, report=_report(1))
+        sample["feeds"][GEEK] = [_dated(9, 0)]
+
+        report = sample["run"](today=TODAY, report=_report(2))
+
+        kinds = {e["kind"] for e in A.events_from_report(report.to_dict())}
+        assert A.EVICTED in kinds and A.FEED_ROLLOVER not in kinds
+
+    def test_a_stream_feed_still_alerts_rollover(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0)]
+        windowed["run"](today=TODAY, report=_report(1))
+        windowed["feeds"][GEEK] = [_dated(9, 0)]
+        report = windowed["run"](today=TODAY, report=_report(2))
+        assert "feed_kind" not in report.fetch[GEEK]
+        assert A.FEED_ROLLOVER in {e["kind"] for e in A.events_from_report(report.to_dict())}
+
+    def test_unknown_feed_kind_is_rejected_before_any_call(self, windowed):
+        """오타(`samples`)가 조용히 stream 으로 읽히면 안 된다 — 반대 방향도 마찬가지다."""
+        windowed["config"]["sources"]["rss"][0]["feed_kind"] = "samples"
+        with pytest.raises(ValueError, match="feed_kind"):
+            windowed["run"](today=TODAY)
+        assert windowed["gate"].calls == []
+
+    def test_the_shipped_config_marks_only_arxiv_as_sample(self):
+        """플래그가 다른 소스에 번지면 그 소스의 넘김 손실이 조용히 사라진다."""
+        from collectors.rss import load_config, rss_sources
+
+        from pipeline.runner import feed_kind
+
+        config = load_config()
+        samples = [s["name"] for s in rss_sources(config) if feed_kind(config, s["name"]) == "sample"]
+        assert samples == ["arXiv cs.CL (Atom API)"]

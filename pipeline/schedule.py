@@ -58,7 +58,9 @@ from pipeline import notify as N
 from pipeline.ledger import Ledger, now_iso
 from pipeline.runner import (
     DEFAULT_RUNS_DIR,
+    FEED_SAMPLE,
     RunReport,
+    feed_kind,
     limits_from_config,
     new_report,
     run_pipeline,
@@ -299,6 +301,11 @@ def _run_locked(
                    store=store, toast=toast, now=now, exit_code=code, outcome=outcome)
 
 
+def depth_sources(config: dict[str, Any]) -> list[str]:
+    """피드 깊이로 여유를 재는 소스 — 활성 소스 중 상한이 걸린 것, 표본 피드 제외."""
+    return [name for name in limits_from_config(config).sources if feed_kind(config, name) != FEED_SAMPLE]
+
+
 def _finish(
     config: dict[str, Any],
     cfg: ScheduleConfig,
@@ -318,6 +325,8 @@ def _finish(
     # 사람이 읽는 시각은 전부 KST 로 — 실행 요약의 `started_at` 이 KST 라서, UTC 를 섞으면
     # 같은 노트 안에서 두 시각이 9시간 어긋나 보인다 (실기 스모크, session-17).
     finished = now().astimezone(KST)
+    # 수집이 막힌 사건의 등급은 잃기까지의 여유로 정한다 (ADR-025 Amendment 1).
+    A.attach_loss_clocks(events, runs_dir=paths.runs_dir, sources=depth_sources(config), now=finished)
     state = A.load_state(paths.alerts)
     raised = A.update_state(state, events, run_id=report.run_id, now=finished.isoformat(timespec="seconds"), evaluated=evaluated)
     A.save_state(state, paths.alerts)

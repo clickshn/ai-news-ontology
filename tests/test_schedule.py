@@ -248,8 +248,111 @@ def test_source_error_escalates_by_consecutive_runs():
 
 
 def test_env_not_ready_is_critical_on_second_run():
+    """깊이 기록이 없을 때의 횟수 규칙."""
     assert A.severity(A.ENV_NOT_READY, 1) == A.WARNING
     assert A.severity(A.ENV_NOT_READY, 2) == A.CRITICAL
+
+
+# ---------------------------------------------------------------------------
+# 잃기까지의 여유 — 피드 깊이 기반 등급 (ADR-025 Amendment 1)
+# ---------------------------------------------------------------------------
+def _run_summary(runs, name: str, started: datetime, fetch: dict):
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / f"pipeline-{name}.json").write_text(
+        json.dumps({"started_at": started.isoformat(), "fetch": fetch}), encoding="utf-8"
+    )
+
+
+def test_shallow_feed_is_critical_on_the_first_failure(tmp_path):
+    """AI타임스 27.8시간: 어제 성공했으면 오늘 실패로 여유 27.8 − 24 − 24 < 0."""
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {"AI타임스": {"status": "ok", "depth_hours": 27.8}})
+    events = [A.event(A.SOURCE_ERROR, "수집 실패", "AI타임스")]
+
+    A.attach_loss_clocks(events, runs_dir=runs, sources=["AI타임스"], now=NOW)
+
+    assert events[0]["loss"]["slack_hours"] == -20.2
+    assert A.severity(A.SOURCE_ERROR, 1, events[0]["loss"]) == A.CRITICAL
+    assert "다음 정기 실행 전에 돌리지 않으면 잃는다" in events[0]["detail"]
+
+
+def test_deep_feed_is_info_once_and_warning_after(tmp_path):
+    """NVIDIA 76일: 며칠 실패해도 잃지 않는다. 그래도 죽은 소스는 2회부터 경고."""
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=72), {"NVIDIA": {"status": "ok", "depth_hours": 1814.6}})
+    events = [A.event(A.SOURCE_ERROR, "x", "NVIDIA")]
+    A.attach_loss_clocks(events, runs_dir=runs, sources=["NVIDIA"], now=NOW)
+
+    loss = events[0]["loss"]
+    assert A.severity(A.SOURCE_ERROR, 1, loss) == A.INFO
+    assert A.severity(A.SOURCE_ERROR, 5, loss) == A.WARNING  # 횟수로는 심각까지 가지 않는다
+
+
+def test_global_kinds_use_the_tightest_source(tmp_path):
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {
+        "AI타임스": {"status": "ok", "depth_hours": 27.8},
+        "NVIDIA": {"status": "ok", "depth_hours": 1814.6},
+    })
+    events = [A.event(A.ENV_NOT_READY, "VPN"), A.event(A.BREAKER, "extraction: 전송 오류")]
+
+    A.attach_loss_clocks(events, runs_dir=runs, sources=["AI타임스", "NVIDIA"], now=NOW)
+
+    assert {ev["loss"]["source"] for ev in events} == {"AI타임스"}
+    assert A.severity(A.ENV_NOT_READY, 1, events[0]["loss"]) == A.CRITICAL
+
+
+def test_last_success_is_read_past_failed_runs(tmp_path):
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260928-000000", NOW - timedelta(hours=48), {"A": {"status": "ok", "depth_hours": 100.0}})
+    # 실패한 수집에도 깊이가 붙어 있을 수 있다(엔트리를 전부 버린 경우 등). 상태만으로 거른다
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {"A": {"status": "no_usable_entries", "depth_hours": 5.0}})
+
+    clock = A.loss_clock(A.last_depths(runs, ["A"]), now=NOW, source="A")
+
+    assert clock["hours_since_success"] == 48.0 and clock["slack_hours"] == 28.0
+
+
+def test_sample_feeds_and_removed_sources_are_not_measured(tmp_path):
+    """표본 피드(arXiv 1.1시간)를 넣으면 매일 심각이다. 은퇴한 소스는 영원히 '마지막 성공'이 오래된다."""
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {
+        "arXiv": {"status": "ok", "depth_hours": 1.1, "feed_kind": "sample"},
+        "Retired": {"status": "ok", "depth_hours": 1.0},
+        "NVIDIA": {"status": "ok", "depth_hours": 1814.6},
+    })
+    events = [A.event(A.ENV_NOT_READY, "VPN")]
+
+    A.attach_loss_clocks(events, runs_dir=runs, sources=["arXiv", "NVIDIA"], now=NOW)
+
+    assert events[0]["loss"]["source"] == "NVIDIA"
+
+
+def test_without_depth_history_the_count_rule_applies(tmp_path):
+    events = [A.event(A.SOURCE_ERROR, "x", "A")]
+    A.attach_loss_clocks(events, runs_dir=tmp_path / "none", sources=["A"], now=NOW)
+    assert "loss" not in events[0]
+    assert A.severity(A.SOURCE_ERROR, 3, events[0].get("loss")) == A.CRITICAL
+
+
+def test_scheduled_run_grades_a_fetch_failure_by_depth(world, monkeypatch):
+    """끝에서 끝까지: 어제 27.8시간 깊이로 받은 소스가 오늘 죽으면 첫 회에 심각 + 토스트."""
+    from collectors.rss import FeedResult, FetchStatus
+
+    config = _config()
+    _approve(config, world["root"])
+    _run_summary(world["paths"].runs_dir, "20260929-090000", NOW - timedelta(hours=24), {GEEK: {"status": "ok", "depth_hours": 27.8}})
+    monkeypatch.setattr(
+        pipeline_runner, "collect_feed_results",
+        lambda config, *, source_name=None, **kw: [FeedResult(source_name=source_name, status=FetchStatus.TIMEOUT, detail="t")],
+    )
+
+    world["run"](config)
+
+    alert = _state(world)["open"][f"source_error|{GEEK}"]
+    assert alert["consecutive"] == 1 and alert["severity"] == A.CRITICAL
+    assert alert["loss"]["depth_hours"] == 27.8
+    assert world["toasts"]
 
 
 def test_unevaluated_kinds_are_not_closed():

@@ -162,7 +162,13 @@ def parse_offset(value: str | None) -> timedelta | None:
 
 
 def _entry_datetime(entry: Any, naive_offset: timedelta | None = None) -> tuple[date | None, bool]:
-    """발행일(UTC 날짜)과 **원문에 시간대 표기가 없었는지**를 돌려준다.
+    """발행일(UTC 날짜)과 **원문에 시간대 표기가 없었는지**를 돌려준다. `_entry_moment` 참고."""
+    moment, naive = _entry_moment(entry, naive_offset)
+    return (moment.date() if moment else None), naive
+
+
+def _entry_moment(entry: Any, naive_offset: timedelta | None = None) -> tuple[datetime | None, bool]:
+    """발행 시각(UTC, naive datetime)과 **원문에 시간대 표기가 없었는지**를 돌려준다.
 
     `published_at` 은 모든 소스에서 **UTC 날짜**다 (ADR-023). 시간대를 주는 피드는
     feedparser 가 이미 UTC 로 바꿔 준다. 표기가 없는 값(`2026-09-29 07:27:02`,
@@ -184,7 +190,7 @@ def _entry_datetime(entry: Any, naive_offset: timedelta | None = None) -> tuple[
         naive = bool(raw) and not _EXPLICIT_TZ_RE.search(str(raw).strip())
         if naive and naive_offset is not None:
             moment -= naive_offset
-        return moment.date(), naive
+        return moment, naive
     return None, False
 
 
@@ -321,6 +327,10 @@ class FeedResult:
     warning: str = ""
     # 시간대 표기 없이 온 발행일 수. `naive_date_offset` 이 없으면 UTC 로 읽었다는 뜻이다.
     naive_dates: int = 0
+    # 피드가 주는 기간(가장 이른 ~ 가장 늦은 발행 시각, 시간). 이보다 오래 못 돌면 그 사이
+    # 글을 잃는다 — 수집 실패 경보의 등급이 이것으로 정해진다 (ADR-025 Amendment 1).
+    # `published_at` 은 날짜뿐이라 여기서만 시각으로 잰다. 발행 시각이 둘 미만이면 None.
+    depth_hours: float | None = None
 
     @property
     def failed(self) -> bool:
@@ -333,6 +343,8 @@ class FeedResult:
             value = getattr(self, key)
             if value:
                 out[key] = value
+        if self.depth_hours is not None:
+            out["depth_hours"] = self.depth_hours
         return out
 
 
@@ -416,14 +428,18 @@ def fetch_feed(
     items: list[RawItem] = []
     dropped = 0
     naive_dates = 0
+    moments: list[datetime] = []
     for entry in entries:
         link = entry.get("link")
         title = (entry.get("title") or "").strip()
         if not link or not title:
             dropped += 1
             continue
-        published_at, naive = _entry_datetime(entry, naive_offset)
+        moment, naive = _entry_moment(entry, naive_offset)
+        published_at = moment.date() if moment else None
         naive_dates += naive
+        if moment:
+            moments.append(moment)
         try:
             items.append(
                 RawItem(
@@ -450,6 +466,7 @@ def fetch_feed(
         "dropped": dropped,
         "warning": warning,
         "naive_dates": naive_dates,
+        "depth_hours": round((max(moments) - min(moments)).total_seconds() / 3600, 1) if len(moments) >= 2 else None,
     }
     if not items and dropped:
         return _failure(

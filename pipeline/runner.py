@@ -206,6 +206,25 @@ def validate_sources(config: dict[str, Any], names: Sequence[str]) -> None:
     unknown = [n for n in names if n not in known]
     if unknown:
         raise ValueError(f"config.yaml 에 없는 소스: {unknown}. 가능한 값: {sorted(known)}")
+    for name in names:
+        feed_kind(config, name)  # 오타를 실행 전에 막는다
+
+
+#: `sources.rss[].feed_kind` 값. 기본은 stream (ADR-025 Amendment 1).
+FEED_STREAM, FEED_SAMPLE = "stream", "sample"
+
+
+def feed_kind(config: dict[str, Any], source_name: str) -> str:
+    """이 소스가 **표본 피드**인가 — 피드가 새 글 전부가 아니라 일부만 주도록 설계된 소스.
+
+    ⚠️ `sample` 은 이 소스의 손실 신호 일부를 **끈다.** 끄는 것: `feed_rollover` 경보,
+    수집 실패 등급의 피드 깊이 계산. 끄지 않는 것: `evicted_*`(우리가 미룬 항목의 손실).
+    다른 소스에 무심코 붙이면 그 소스의 피드 넘김 손실이 조용히 사라진다. 모르는 값은 오류다.
+    """
+    value = (source_config(config, source_name).get("feed_kind") or FEED_STREAM).strip().lower()
+    if value not in (FEED_STREAM, FEED_SAMPLE):
+        raise ValueError(f"{source_name}: feed_kind 는 {FEED_STREAM} | {FEED_SAMPLE} 이다 (받은 값: {value!r})")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +437,9 @@ def run_llm_stages(
         # 다음 소스로 간다 — 흐름은 멈추지 않고, 종료 코드는 부분 실패(3)가 된다.
         fetched = fetch_source_result(config, source_name)
         report.fetch[source_name] = fetched.summary()
+        if feed_kind(config, source_name) == FEED_SAMPLE:
+            # 요약이 스스로 말하게 둔다 — 경보가 이 값을 보고 넘김 경보만 뺀다.
+            report.fetch[source_name]["feed_kind"] = FEED_SAMPLE
         if fetched.failed:
             tally["source_error"] += 1
             continue

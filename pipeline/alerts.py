@@ -8,8 +8,20 @@ stderr 는 로그 파일로 보존만 한다.
 
 ## 누적이 필요한 이유
 
-하루 한 번의 `source_error` 는 흔하고 대응할 필요도 적다. **사흘 연속이면 글을 잃는다** —
-AI타임스 피드는 약 3일치(50건)만 준다. 한 실행만 보는 장치는 이 둘을 구분하지 못한다.
+하루 한 번의 `source_error` 는 흔하고 대응할 필요도 적다. 그런데 **피드가 얕으면 한 번으로
+글을 잃는다.** 한 실행만 보는 장치는 이 둘을 구분하지 못한다.
+
+## 수집이 막힌 경보의 등급은 "잃기까지 남은 시간"으로 정한다 (ADR-025 Amendment 1)
+
+예전 등급(3회 = 심각)은 "AI타임스 피드 약 3일치"를 전제로 했다. 실측은 **27.8시간**이었다
+(session-18). 소스마다 깊이가 다르므로(arXiv 1.1시간 ~ OpenAI 10년+) 횟수로는 못 가른다.
+
+    여유 = 피드 깊이 − 마지막 성공 수집 이후 시간 − 다음 실행까지(24시간)
+
+여유가 0 이하면 **심각** — 다음 정기 실행 전에 사람이 돌리지 않으면 확실히 잃는다. 여유가
+있으면 1회는 정보, 2회 연속부터 경고(깊은 피드라도 죽은 소스는 문제다). 깊이 기록이 없으면
+예전 횟수 규칙을 쓴다. `env_not_ready` · `breaker` 는 소스 전체에 걸리므로 **가장 빠듯한
+소스**로 잰다. 표본 피드(`feed_kind: sample`)는 깊이 계산에서 뺀다 — 피드가 원래 일부만 준다.
 
 ## 평가하지 않은 조건은 닫지 않는다
 
@@ -22,6 +34,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,18 +68,30 @@ READINESS_KINDS = frozenset({ENV_NOT_READY})
 #: 닫힌 경보는 최근 이만큼만 남긴다.
 CLOSED_KEEP = 50
 
+#: 정기 실행 간격. 자동 실행은 하루 한 번이다 (`schedule.time`).
+RUN_INTERVAL_HOURS = 24
+#: 등급을 피드 깊이로 정하는 종류 — 수집이 막혀 글을 잃을 수 있는 것.
+DEPTH_KINDS = frozenset({SOURCE_ERROR, ENV_NOT_READY, BREAKER})
+#: 깊이 기록을 찾으러 거슬러 읽는 실행 요약 수의 상한.
+DEPTH_LOOKBACK_RUNS = 60
 
-def severity(kind: str, consecutive: int) -> str:
-    """연속 실행 수에 따른 등급. 날짜 기준에는 이유가 있다 (ADR-025).
 
-    - `source_error` · `breaker` 3회 = 심각: AI타임스 피드 깊이가 약 3일이다
-    - `env_not_ready` 2회 = 심각: 같은 이유로, 이틀 못 돌면 사흘째에 잃기 시작한다
-    - `window_capped` = 심각: 14일 상한에 닿았다는 것은 이미 잃고 있다는 뜻이다
+def severity(kind: str, consecutive: int, loss: dict[str, Any] | None = None) -> str:
+    """등급. `loss` 는 `attach_loss_clocks` 가 붙인 잃기까지의 여유 (모듈 설명).
+
+    - `source_error` · `env_not_ready` · `breaker`: 여유 0 이하 = 심각. 여유가 있으면 1회 정보
+      (`breaker` 는 경고), 2회부터 경고. 깊이 기록이 없으면 예전 횟수 규칙
+    - `window_capped` = 심각: 필요한 cutoff 가 14일 상한 너머 — 이미 거르고 있다 (ADR-023 Amendment 2)
     - `evicted` · `feed_rollover` = 첫 회부터 경고: 미룬 것이 아니라 **이미 잃은 것**이다.
       `not_drained` 는 아직 피드에 남아 있어 다음 실행이 집을 수 있는 상태라 1회는 정보다
     """
     if kind in (PREFLIGHT_MISMATCH, WINDOW_CAPPED, RUN_ERROR):
         return CRITICAL
+    if kind in DEPTH_KINDS and loss is not None:
+        if loss["slack_hours"] <= 0:
+            return CRITICAL
+        return WARNING if consecutive >= 2 or kind == BREAKER else INFO
+    # 깊이를 모를 때의 횟수 규칙 (예전 규칙)
     if kind == ENV_NOT_READY:
         return CRITICAL if consecutive >= 2 else WARNING
     if kind in (SOURCE_ERROR, BREAKER):
@@ -86,6 +111,71 @@ def event(kind: str, detail: str, source: str | None = None) -> dict[str, Any]:
 
 def key_of(ev: dict[str, Any]) -> str:
     return f"{ev['kind']}|{ev.get('source') or '-'}"
+
+
+# ---------------------------------------------------------------------------
+# 잃기까지의 여유 (ADR-025 Amendment 1)
+# ---------------------------------------------------------------------------
+def last_depths(runs_dir: Path, sources: Iterable[str]) -> dict[str, tuple[datetime, float]]:
+    """소스별 **마지막 성공 수집**의 시각과 그때 잰 피드 깊이(시간). 표본 피드는 뺀다."""
+    wanted = set(sources)
+    found: dict[str, tuple[datetime, float]] = {}
+    paths = sorted(Path(runs_dir).glob("pipeline-*.json"), reverse=True)[:DEPTH_LOOKBACK_RUNS]
+    for path in paths:
+        if wanted <= set(found):
+            break
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            started = datetime.fromisoformat(data["started_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        for name, fetch in (data.get("fetch") or {}).items():
+            if name not in wanted or name in found:
+                continue
+            if fetch.get("status") not in ("ok", "empty") or fetch.get("feed_kind") == "sample":
+                continue
+            if fetch.get("depth_hours") is None:
+                continue
+            found[name] = (started, float(fetch["depth_hours"]))
+    return found
+
+
+def loss_clock(
+    depths: dict[str, tuple[datetime, float]], *, now: datetime, source: str | None = None
+) -> dict[str, Any] | None:
+    """`source` 의 여유, 없으면 **가장 빠듯한** 소스의 여유. 깊이 기록이 없으면 None."""
+    if source is None:
+        candidates = depths
+    else:
+        candidates = {source: depths[source]} if source in depths else {}
+    best: dict[str, Any] | None = None
+    for name, (last_ok, depth) in candidates.items():
+        since = round((now - last_ok).total_seconds() / 3600, 1)
+        slack = round(depth - since - RUN_INTERVAL_HOURS, 1)
+        clock = {"source": name, "depth_hours": depth, "hours_since_success": since, "slack_hours": slack}
+        if best is None or slack < best["slack_hours"]:
+            best = clock
+    return best
+
+
+def attach_loss_clocks(
+    events: list[dict[str, Any]], *, runs_dir: Path, sources: Iterable[str], now: datetime
+) -> None:
+    """수집이 막힌 사건에 여유를 붙이고, 사유에 사람이 읽을 한 줄을 더한다."""
+    targets = [ev for ev in events if ev["kind"] in DEPTH_KINDS]
+    if not targets:
+        return
+    depths = last_depths(runs_dir, sources)
+    for ev in targets:
+        clock = loss_clock(depths, now=now, source=ev.get("source"))
+        if clock is None:
+            continue
+        ev["loss"] = clock
+        verdict = "다음 정기 실행 전에 돌리지 않으면 잃는다" if clock["slack_hours"] <= 0 else f"여유 {clock['slack_hours']}시간"
+        ev["detail"] = (
+            f"{ev['detail']} — {clock['source']} 피드 깊이 {clock['depth_hours']}시간,"
+            f" 마지막 성공 {clock['hours_since_success']}시간 전: {verdict}"
+        )
 
 
 def events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -122,7 +212,10 @@ def events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
                 f"처리되지 않고 피드 밖으로 밀려남 — 게이트 대기 {gate} · 추출 대기 {extraction}",
                 name,
             ))
-        if tally.get("feed_rollover"):
+        # 표본 피드는 매일 넘긴다(arXiv 20건 = 제출 1.1시간치). 기록(tally)은 남기고 경보만 뺀다.
+        # `evicted_*` 는 표본 피드에서도 경보다 — 우리가 미룬 항목의 손실이기 때문이다.
+        is_sample = ((report.get("fetch") or {}).get(name) or {}).get("feed_kind") == "sample"
+        if tally.get("feed_rollover") and not is_sample:
             out.append(event(
                 FEED_ROLLOVER,
                 "직전 실행의 피드 맨 앞 항목이 모두 사라졌다 — 그 사이 본 적 없는 항목을 잃었을 수 있다(건수 모름)",
@@ -184,7 +277,7 @@ def update_state(
         seen.add(key)
         prev = state["open"].get(key)
         consecutive = (prev["consecutive"] + 1) if prev else 1
-        level = severity(ev["kind"], consecutive)
+        level = severity(ev["kind"], consecutive, ev.get("loss"))
         alert = {
             "kind": ev["kind"],
             "source": ev.get("source"),
@@ -194,6 +287,7 @@ def update_state(
             "last_run": run_id,
             "consecutive": consecutive,
             "severity": level,
+            **({"loss": ev["loss"]} if ev.get("loss") else {}),
         }
         state["open"][key] = alert
         if prev is None or _RANK[level] > _RANK[prev["severity"]]:
