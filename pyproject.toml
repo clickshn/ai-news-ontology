@@ -46,7 +46,7 @@ vendor = [
 # ai-news = "collectors.__main__:main"
 
 [tool.setuptools]
-packages = ["collectors", "extraction", "eval", "export", "obsidian_writer", "observability"]
+packages = ["collectors", "extraction", "eval", "export", "obsidian_writer", "observability", "pipeline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
