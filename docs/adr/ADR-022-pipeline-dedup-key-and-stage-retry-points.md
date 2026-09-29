@@ -1,6 +1,6 @@
 # ADR-022: 파이프라인 재실행 중복 판정은 `doc_id` 하나로, 단계 완료는 그 산출물을 가진 층이 판정하고 재시도는 영속 산출물이 없는 첫 단계부터 한다
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-29
 - **Decision:** 수집→게이트→추출→보존→적재 오케스트레이션에서 같은 기사의 식별 키는 계약 §4 의 `doc_id` 하나로 두고, 게이트 완료는 신규 원장, 추출 완료는 보존소, 적재 완료는 Vault 색인이 판정한다. 각 단계는 다음 단계 전에 산출물을 영속하며, 실패 시 재시도는 영속된 산출물이 없는 첫 단계부터 시작한다
 - **Scope:** `pipeline/` (신규: `ledger.py` · `runner.py`) · `export/runner.py` (항목 처리 로직 공유 함수화) · `obsidian_writer/` (Vault 색인) · `data/pipeline/`
