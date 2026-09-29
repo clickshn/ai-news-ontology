@@ -1,10 +1,10 @@
 """export 실행 CLI — 수집·게이트·추출·보존(`collect`)과 형식 변환(`export`)을 나눈다.
 
     # 1단계 표본 구성 확인 (API 호출 없음)
-    python -m export.runner plan --take "GeekNews=10" --urls https://arxiv.org/abs/2412.05449v1
+    python -m export.runner plan --take "OpenAI News=10" --urls https://arxiv.org/abs/2412.05449v1
 
     # 실제 호출 (게이트 + 추출). 결과는 받는 즉시 data/extractions/ 에 보존된다
-    python -m export.runner collect --take "GeekNews=10" --max-extractions 30
+    python -m export.runner collect --take "OpenAI News=10" --max-extractions 30
 
     # 보존된 결과만으로 JSONL + manifest 생성 (API 호출 없음)
     python -m export.runner export

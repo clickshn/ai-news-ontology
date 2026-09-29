@@ -16,54 +16,114 @@ version: 1
 sources:
   rss:
     # - name: 사람이 읽는 이름 / url: 피드 주소 / tags: 기본 힌트 태그
+    #   ("ko" 는 export 계약의 lang 을 정한다 — export/record.py: declared_lang)
     #   body_quality: full | truncated | oneline | partial | title_only
+    #   limits: 실행당 호출 상한 {gate, extract}. **CLI 로 하나라도 주면 이 값 전체가
+    #           대체된다** (ADR-023). 전역 천장 기본값은 이 값들의 합이다 (D-102)
+    #   max_silence_days: 가장 최근 발행일이 이보다 오래되면 갱신 멈춤으로 보고 소스
+    #           단위 실패로 센다. 200 을 주면서 멈춘 피드를 잡는다 (ADR-023)
+    #   naive_date_offset: 시간대 표기 없는 발행일을 읽을 UTC 오프셋. 없으면 UTC 로
+    #           읽고 경고한다. 표기가 있는 값에는 쓰지 않는다 (ADR-023)
     #
-    # body_quality 는 2026-08-29 실측값이다. 소스당 50건(arXiv 는 20건)을
-    # collectors.rss 로 수집해 body 길이의 중앙값을 잰 결과:
+    # 2026-09-29 실측 (session-16). 본문은 앞 50건(피드가 50건 미만이면 전부),
+    # 총건수는 피드가 주는 전체, 7일은 발행일 기준:
     #
-    #   소스                     건수  최소   중앙   최대  0자
-    #   arXiv cs.CL (Atom API)    20   979   1339  1895    0
-    #   GeekNews                  50    48    160   185     0
-    #   OpenAI News               50   109    149   180     0
-    #   Google DeepMind Blog      50     0     97   210    15
-    #   Hugging Face Blog         50     0      0     0    50
+    #   소스                     총건수  최소  중앙   최대  0자   7일  최신
+    #   arXiv cs.CL (Atom API)      20  1068  1508  1919    0    20  09-26
+    #   OpenAI News               1234    84   144   250    0    19  09-29
+    #   Google DeepMind Blog       100     0    79   210   21     3  09-24
+    #   NVIDIA Developer           100   164   562   573    0    12  09-28
+    #   Microsoft Research          10  4000  4000  4000    0     2  09-28
+    #   AI타임스 (gn)               50   478  1457  3406    0    50  09-29
+    #   인공지능신문                50   299   300   300    0    50  09-29
     #
-    # → 벤더 블로그 피드는 본문을 거의 주지 않는다. 결정 로그 D-013 / D-014 참고.
+    # 발행일 없는 항목: 전 소스 0건. 최댓값 4000 은 수집기의 BODY_MAX_CHARS 에서 잘린 것.
+    #
+    # 제외 (D-105):
+    #   GeekNews            — 중앙값 160자, 비-AI 약 40%. 기존 골든셋·노트는 유지(소급 제거 없음)
+    #   Hugging Face Blog   — 50/50건 0자. 제목만으로는 추출 품질이 안 나온다
+    #   Google Research     — 중앙값 19자 (같은 기준)
+    #   Mistral AI          — 50건 중 29건 0자
+    #   NVIDIA Blog         — 비-AI(게이밍) 혼재. NVIDIA Developer 로 충분
+    #   전자신문 AI         — 250자 잘림, 인공지능신문과 겹침. 게이트 통과율을 본 뒤 재판단
+    #   Meta AI · ZDNet Korea — 쓸 수 있는 피드 없음 (ZDNet 레거시 경로는 2024-05-10 에 멈춤)
+    #   Anthropic           — 공식 피드 없음. 비공식 중계 3종은 모델 출시 글 누락·404 링크·
+    #                         제목 오염이 관측돼 넣지 않는다
 
     # arXiv Atom API. RSS 공지 피드(rss.arxiv.org)는 주말/공휴일에 0건이라
     # 슬라이스 검증에 못 쓴다. API 쿼리는 언제든 최근 논문 + 초록 전문을 준다.
+    # published 는 제출일이라 게시보다 3일 이상 늦다 — 전역 창 7일이 흡수한다.
     - name: "arXiv cs.CL (Atom API)"
       url: "http://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=20"
       tags: ["paper"]
-      body_quality: "full"        # 초록 전문, 중앙값 1339자
+      body_quality: "full"        # 초록 전문
+      limits: {gate: 20, extract: 10}   # 피드가 한 번에 20건만 준다
+      max_silence_days: 5         # 제출일 기준 + 주말
 
     - name: "OpenAI News"
       url: "https://openai.com/news/rss.xml"
       tags: ["vendor"]
-      body_quality: "oneline"     # 한 줄 설명, 중앙값 149자
+      body_quality: "oneline"     # 한 줄 설명
+      limits: {gate: 10, extract: 5}    # 7일 19건
+      max_silence_days: 7
 
+    # 2026-09-29: plan 실패 / run 성공 불일치의 원인은 요청하지 않은 gzip 이었다 (D-104).
     - name: "Google DeepMind Blog"
       url: "https://deepmind.google/blog/rss.xml"
       tags: ["vendor"]
-      body_quality: "partial"     # 중앙값 97자, 50건 중 15건은 0자. 편차가 크다
+      body_quality: "partial"     # 50건 중 21건 0자. 편차가 크다
+      limits: {gate: 5, extract: 3}     # 7일 3건
+      max_silence_days: 21        # 100건이 약 11개월치
+
+    - name: "NVIDIA Developer"
+      url: "https://developer.nvidia.com/blog/feed/"
+      tags: ["vendor"]
+      body_quality: "truncated"   # 요약 약 560자
+      limits: {gate: 10, extract: 5}    # 7일 12건
+      max_silence_days: 7
+
+    # /research/feed/ 와 내용이 같다(2026-09-29). 블로그 쪽이 이름대로다.
+    - name: "Microsoft Research"
+      url: "https://www.microsoft.com/en-us/research/blog/feed/"
+      tags: ["vendor"]
+      body_quality: "full"        # 전문 (4000자에서 잘림)
+      limits: {gate: 5, extract: 3}     # 피드가 10건(약 2개월치)만 준다
+      max_silence_days: 30
+
+    # gn 판을 쓴다. 일반 판(/rss/allArticle.xml)은 같은 기사를 300자에서 자르고
+    # 발행일에 시간대가 없다. gn 판은 `+0900` 을 준다.
+    # ⚠️ 피드가 최근 50건(약 2~3일치)만 준다 — 3일 넘게 쉬면 그 사이 글은 복구되지 않는다.
+    - name: "AI타임스"
+      url: "https://cdn.aitimes.com/rss/gn_rss_allArticle.xml"
+      tags: ["ko", "media"]
+      body_quality: "truncated"   # 중앙값 1457자
+      limits: {gate: 40, extract: 15}   # 하루 신규 약 38건
+      max_silence_days: 2
+
+    # 봇 차단은 없었다(2026-09-29, 기본 UA). 발행일이 시간대 없는 KST 다.
+    - name: "인공지능신문"
+      url: "https://www.aitimes.kr/rss/allArticle.xml"
+      tags: ["ko", "media"]
+      body_quality: "truncated"   # 300자에서 잘림
+      limits: {gate: 25, extract: 10}   # 하루 신규 약 19건
+      max_silence_days: 3
+      naive_date_offset: "+09:00"
+
+  # 수집을 멈춘 소스. **수집하지 않는다.** 제외는 앞으로만이라(D-105) 이미 들어온
+  # 골든셋·노트·보존소 항목은 그대로이고, eval.predict 가 골든셋 URL 의 호스트로 소스
+  # 이름을 유도할 때 여기를 본다 — 지우면 GeekNews 골든셋 2건의 재추출이 멈춘다.
+  retired:
+    - name: "GeekNews"
+      url: "https://news.hada.io/rss/news"
+      tags: ["ko", "aggregator"]
+      retired_on: "2026-09-29"
+      reason: "본문 중앙값 160자, 비-AI 약 40% (D-105)"
 
     - name: "Hugging Face Blog"
       url: "https://huggingface.co/blog/feed.xml"
       tags: ["oss"]
-      body_quality: "title_only"  # 50건 전부 0자
-
-    # 한국어 기술 뉴스 애그리게이터. title_only 피드가 많은 상황에서
-    # 본문 커버리지를 보강할 목적으로 추가. 결정 로그 D-014 참고.
-    # 주의: AI 전용 소스가 아니다(최근 50건 중 AI 관련 약 60%). 온톨로지가
-    #       AI 어휘만 갖고 있으므로 비-AI 항목 필터링이 필요하다.
-    - name: "GeekNews"
-      url: "https://news.hada.io/rss/news"
-      tags: ["ko", "aggregator"]
-      body_quality: "truncated"   # 중앙값 160자, 0자 없음. 50건 중 40건이 말줄임으로 잘림
-
-    # Anthropic News: rss.xml / news/rss.xml / news/feed.xml 모두 404 (2026-08-29 확인).
-    # 공개 피드 주소를 확인한 뒤 추가한다.
-    # TODO: 한국어 소스(예: AI타임스) 추가 검토
+      retired_on: "2026-09-29"
+      reason: "50/50건 본문 0자 (D-105)"
 
   arxiv:
     # arXiv API 로 최근 N일 논문을 가져올 카테고리
@@ -75,6 +135,21 @@ sources:
       - "cs.MA"   # Multiagent Systems
     lookback_days: 3
     max_results_per_category: 50
+
+  # (config 의 `sources.arxiv` 는 코드에서 쓰지 않는다 — collectors/README.md)
+
+# --- 1-1. 매일 실행의 수용 창 (ADR-023) ----------------------------------------
+# 원장에 **처음 들어오는** 항목만 발행일로 거른다. 재실행 중복은 원장이 거르므로
+# 다시 보는 비용은 0 이고, 창이 막는 것은 첫 수용 범위 하나다.
+#   span = 첫 실행이면 lookback_days,
+#          아니면 min(max(lookback_days, 소스별 마지막 완결 실행 이후 일수 + overlap_days), max_lookback_days)
+# 이 절을 지우면 창이 꺼진다(전량 수용).
+pipeline:
+  window:
+    lookback_days: 7          # arXiv 의 게시 지연(3일+)을 흡수한다 — 소스별 창을 두지 않는 이유
+    overlap_days: 1           # 시간대 ±1일
+    max_lookback_days: 14     # 첫 실행이 아니라 "오래 쉰 뒤"의 상한
+    undated_max_per_run: 5    # 발행일 없음·미래 날짜는 피드 순서로 소스당 이만큼만
 
 # --- 2. LLM ------------------------------------------------------------------
 # 단계별로 모델을 따로 지정한다. 파이프라인 앞단(relevance_gate)은 "분석할 가치가
