@@ -106,6 +106,7 @@
 | `data/extractions/` | 추출 보존소 — 프롬프트 전문, 게이트 판정, 온톨로지 원본 | O (`data/`) |
 | `data/corpus/` | export 산출물 JSONL·manifest | O (`data/`) |
 | `data/replays/` | 대조 실행 산출물 — `rows.json`·`summary.json` 과 **`raw/` 아래의 LLM 원본 응답** (D-052) | O (`data/`) |
+| `data/pipeline/` | 파이프라인 원장(`ledger/`, doc_id 당 게이트 판정·**근거 문장**·오류 메시지·적재 상태)과 실행 요약(`runs/`) (ADR-022) | O (`data/`) |
 | `observability/logs/` | 게이트 스킵 기록, 미등록 기업 큐 | O (`logs/`) |
 | `eval/scores/` | judge 채점 결과, 골든셋 예측(`preds.jsonl`)과 그 메타 | O |
 | `eval/scores/raw/` | 골든셋 재추출의 **LLM 원본 응답** (`eval/predict.py`, D-052) · `judge-{run_id}/` 아래 **judge 원본 응답**, 실패 회차 포함 (`eval/runner.py`, D-092) | O |
@@ -116,7 +117,7 @@
 - **보존 기간:** 정해진 일수 없음. 필요 없다고 판단하면 지운다.
 - **접근 권한:** 별도 통제 없음 — 로컬 파일시스템 권한을 따른다. 그 머신에 로그인할
   수 있는 주체가 곧 접근 주체다.
-- **삭제:** `rm -rf data/extractions data/corpus data/replays` / `rm -rf observability/logs`
+- **삭제:** `rm -rf data/extractions data/corpus data/replays data/pipeline` / `rm -rf observability/logs`
   / `rm -rf eval/scores/raw`.
   ⚠️ `data/replays/*/raw/` 는 **다시 만들 수 없다** — 같은 입력에 대한 그 모델의
   응답이고, 재실행하면 같은 값이 나온다는 보장이 없다 (`export/replay.py` 모듈 설명).
