@@ -38,12 +38,16 @@ SOURCE_ERROR = "source_error"
 STALE_FEED = "stale_feed"
 WINDOW_CAPPED = "window_capped"
 NOT_DRAINED = "not_drained"
+EVICTED = "evicted"
+FEED_ROLLOVER = "feed_rollover"
 BREAKER = "breaker"
 QUARANTINED = "quarantined"
 RUN_ERROR = "run_error"
 
 #: 파이프라인이 실제로 돈 실행이 평가하는 종류.
-RUN_KINDS = frozenset({SOURCE_ERROR, STALE_FEED, WINDOW_CAPPED, NOT_DRAINED, BREAKER, QUARANTINED, RUN_ERROR})
+RUN_KINDS = frozenset({
+    SOURCE_ERROR, STALE_FEED, WINDOW_CAPPED, NOT_DRAINED, EVICTED, FEED_ROLLOVER, BREAKER, QUARANTINED, RUN_ERROR,
+})
 #: 사전 점검 단계가 평가하는 종류.
 PREFLIGHT_KINDS = frozenset({PREFLIGHT_MISMATCH, LOCK_HELD})
 READINESS_KINDS = frozenset({ENV_NOT_READY})
@@ -58,6 +62,8 @@ def severity(kind: str, consecutive: int) -> str:
     - `source_error` · `breaker` 3회 = 심각: AI타임스 피드 깊이가 약 3일이다
     - `env_not_ready` 2회 = 심각: 같은 이유로, 이틀 못 돌면 사흘째에 잃기 시작한다
     - `window_capped` = 심각: 14일 상한에 닿았다는 것은 이미 잃고 있다는 뜻이다
+    - `evicted` · `feed_rollover` = 첫 회부터 경고: 미룬 것이 아니라 **이미 잃은 것**이다.
+      `not_drained` 는 아직 피드에 남아 있어 다음 실행이 집을 수 있는 상태라 1회는 정보다
     """
     if kind in (PREFLIGHT_MISMATCH, WINDOW_CAPPED, RUN_ERROR):
         return CRITICAL
@@ -69,7 +75,7 @@ def severity(kind: str, consecutive: int) -> str:
         return WARNING if consecutive >= 2 or kind == BREAKER else INFO
     if kind == NOT_DRAINED:
         return WARNING if consecutive >= 2 else INFO
-    if kind in (STALE_FEED, QUARANTINED):
+    if kind in (STALE_FEED, QUARANTINED, EVICTED, FEED_ROLLOVER):
         return WARNING
     return INFO
 
@@ -101,9 +107,25 @@ def events_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
             out.append(event(WINDOW_CAPPED, f"창이 상한에 걸렸다 ({window.get('cutoff')}~, {window.get('span_days')}일)", name))
         if window.get("drained") is False:
             tally = (report.get("sources") or {}).get(name) or {}
+            anchor = "창 기준점이 앞으로 가지 않는다" if window.get("window_drained") is False else "창 기준점은 간다"
             out.append(event(
                 NOT_DRAINED,
-                f"미룬 항목 게이트 {tally.get('deferred_gate', 0)} · 미확정 {tally.get('undated_deferred', 0)} — 창 기준점이 앞으로 가지 않는다",
+                f"미룬 항목 게이트 {tally.get('deferred_gate', 0)} · 미확정 {tally.get('undated_deferred', 0)}"
+                f" · 추출 {tally.get('deferred_extraction', 0)} — {anchor}",
+                name,
+            ))
+    for name, tally in (report.get("sources") or {}).items():
+        gate, extraction = tally.get("evicted_gate", 0), tally.get("evicted_extraction", 0)
+        if gate or extraction:
+            out.append(event(
+                EVICTED,
+                f"처리되지 않고 피드 밖으로 밀려남 — 게이트 대기 {gate} · 추출 대기 {extraction}",
+                name,
+            ))
+        if tally.get("feed_rollover"):
+            out.append(event(
+                FEED_ROLLOVER,
+                "직전 실행의 피드 맨 앞 항목이 모두 사라졌다 — 그 사이 본 적 없는 항목을 잃었을 수 있다(건수 모름)",
                 name,
             ))
     for stage in report.get("breaker_tripped") or []:

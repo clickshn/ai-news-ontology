@@ -688,3 +688,127 @@ class TestConfigLimits:
         limits = limits_from_config(load_config())
         assert limits.max_gate_calls == sum(limits.gate.values())
         assert limits.max_extractions == sum(limits.extract.values())
+
+
+# ---------------------------------------------------------------------------
+# 미룬 항목의 행방 · 완결의 두 뜻 (D-111)
+# ---------------------------------------------------------------------------
+from pipeline import alerts as A  # noqa: E402
+
+
+def _report(n: int) -> RunReport:
+    """실행 요약 파일명이 초 단위라, 한 테스트 안의 실행이 서로를 덮지 않게 한다."""
+    return RunReport(run_id=f"pipeline-20260929-0900{n:02d}", started_at="2026-09-29T09:00:00+09:00")
+
+
+class TestEvictions:
+    def test_extraction_backlog_that_leaves_the_feed_is_counted_as_lost(self, windowed):
+        """arXiv: 20건 통과에 추출 10 — 나머지는 다음 날 피드에 없다. 그래도 완결로 보였다."""
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0), _dated(3, 0)]
+        first = windowed["run"](gate={GEEK: 10}, extract={GEEK: 1}, today=TODAY, report=_report(1))
+        assert first.sources[GEEK]["deferred_extraction"] == 2
+
+        windowed["feeds"][GEEK] = [_dated(4, 0)]  # 1~3 은 피드에서 밀려났다
+        report = windowed["run"](gate={GEEK: 10}, extract={GEEK: 10}, today=TODAY, report=_report(2))
+
+        assert report.sources[GEEK]["evicted_extraction"] == 2
+        kinds = {(e["kind"], e["source"]) for e in A.events_from_report(report.to_dict())}
+        assert (A.EVICTED, GEEK) in kinds
+        assert A.severity(A.EVICTED, 1) == A.WARNING  # 미룬 것이 아니라 이미 잃은 것
+
+    def test_gate_backlog_that_leaves_the_feed_is_counted_as_lost(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 1}, extract={GEEK: 10}, today=TODAY, report=_report(1))
+
+        windowed["feeds"][GEEK] = [_dated(3, 0)]
+        report = windowed["run"](gate={GEEK: 10}, extract={GEEK: 10}, today=TODAY, report=_report(2))
+
+        assert report.sources[GEEK]["evicted_gate"] == 1
+        assert report.sources[GEEK]["evicted_extraction"] == 0
+
+    def test_backlog_still_in_the_feed_is_picked_up_not_lost(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 1}, extract={GEEK: 1}, today=TODAY, report=_report(1))
+
+        report = windowed["run"](gate={GEEK: 10}, extract={GEEK: 10}, today=TODAY, report=_report(2))
+
+        tally = report.sources[GEEK]
+        assert tally["evicted_gate"] == 0 and tally["evicted_extraction"] == 0
+        assert tally["extracted"] == 1
+
+    def test_a_loss_is_counted_once(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 10}, extract={GEEK: 1}, today=TODAY, report=_report(1))
+        windowed["feeds"][GEEK] = [_dated(3, 0)]
+        windowed["run"](today=TODAY, report=_report(2))
+
+        report = windowed["run"](today=TODAY, report=_report(3))
+
+        assert report.sources[GEEK]["evicted_extraction"] == 0
+
+    def test_a_failed_fetch_in_between_compares_with_the_last_record(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](gate={GEEK: 10}, extract={GEEK: 1}, today=TODAY, report=_report(1))
+        windowed["feeds"][GEEK] = _failed(FetchStatus.NETWORK_ERROR)
+        windowed["run"](today=TODAY, report=_report(2))
+
+        windowed["feeds"][GEEK] = [_dated(3, 0)]
+        report = windowed["run"](today=TODAY, report=_report(3))
+
+        assert report.sources[GEEK]["evicted_extraction"] == 1
+
+    def test_feed_rollover_is_flagged_without_a_count(self, windowed):
+        """직전 맨 앞 항목이 하나도 없다 = 피드 깊이보다 많이 들어왔다. 못 본 것은 셀 수 없다."""
+        windowed["feeds"][GEEK] = [_dated(1, 0)]
+        windowed["run"](today=TODAY, report=_report(1))
+
+        windowed["feeds"][GEEK] = [_dated(9, 0)]
+        report = windowed["run"](today=TODAY, report=_report(2))
+
+        assert report.sources[GEEK]["feed_rollover"] == 1
+        assert report.sources[GEEK]["evicted_gate"] == 0
+        kinds = {e["kind"] for e in A.events_from_report(report.to_dict())}
+        assert A.FEED_ROLLOVER in kinds
+
+    def test_one_head_item_surviving_is_not_a_rollover(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        windowed["run"](today=TODAY, report=_report(1))
+
+        windowed["feeds"][GEEK] = [_dated(3, 0), _dated(2, 0)]
+        report = windowed["run"](today=TODAY, report=_report(2))
+
+        assert report.sources[GEEK]["feed_rollover"] == 0
+
+    def test_first_record_has_nothing_to_compare(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0)]
+        report = windowed["run"](today=TODAY, report=_report(1))
+        assert report.backlog[GEEK] == {"head": [doc_id_for(str(_dated(1, 0).url))], "gate": [], "extraction": []}
+        assert report.sources[GEEK]["feed_rollover"] == 0
+
+
+class TestDrainedMeansNothingDeferred:
+    def test_extraction_backlog_is_not_drained_but_the_window_anchor_moves(self, windowed):
+        """완결(경보)은 추출 대기까지 보고, 창 기준점은 게이트 쪽만 본다.
+
+        기준점까지 추출 대기에 묶으면 추출 상한이 모자란 소스는 창이 늘 14일 상한에 머물고
+        `window_capped`(심각)이 상시 뜬다 — 경보가 정상 상태가 된다.
+        """
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        report = windowed["run"](gate={GEEK: 10}, extract={GEEK: 1}, today=TODAY, report=_report(1))
+
+        assert report.window[GEEK]["drained"] is False
+        assert report.window[GEEK]["window_drained"] is True
+        detail = next(e["detail"] for e in A.events_from_report(report.to_dict()) if e["kind"] == A.NOT_DRAINED)
+        assert "추출 1" in detail and "기준점은 간다" in detail
+
+        later = windowed["run"](
+            gate={GEEK: 10}, extract={GEEK: 10}, today=TODAY + timedelta(days=9), report=_report(2)
+        )
+        assert later.window[GEEK]["anchor"] == TODAY.isoformat()
+        assert not later.window[GEEK]["capped"]
+
+    def test_gate_backlog_is_neither(self, windowed):
+        windowed["feeds"][GEEK] = [_dated(1, 0), _dated(2, 0)]
+        report = windowed["run"](gate={GEEK: 1}, extract={GEEK: 10}, today=TODAY, report=_report(1))
+        assert report.window[GEEK]["drained"] is False and report.window[GEEK]["window_drained"] is False
+

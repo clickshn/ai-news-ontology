@@ -101,6 +101,16 @@ class TestLastDrained:
         assert last_drained(runs, "A", today=TODAY, policy=POLICY) == _days_ago(2)
 
 
+class TestWindowDrainedField:
+    def test_window_drained_wins_over_drained(self, tmp_path):
+        """추출 대기가 있으면 drained=false 지만 기준점은 간다 (D-111)."""
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        record = {"window": {"A": {"today": _days_ago(2).isoformat(), "drained": False, "window_drained": True}}}
+        (runs / "pipeline-20260927-090000.json").write_text(json.dumps(record), encoding="utf-8")
+        assert last_drained(runs, "A", today=TODAY, policy=POLICY) == _days_ago(2)
+
+
 class TestSilence:
     def test_old_newest_item_is_silent(self):
         """ZDNet Korea: 200, 30건, 최신 2024-05-10."""

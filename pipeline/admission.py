@@ -13,8 +13,10 @@
     기준점 있음                span = min(max(lookback_days, 기준점 이후 일수 + overlap_days), max_lookback_days)
 
 **기준점은 소스별 "마지막 완결 실행"이다.** 완결은 수집이 실패하지 않았고, 창을 통과한
-항목 중 상한·차단기로 미룬 것과 미확정 초과분이 0 인 실행이다. 미룬 항목이 있으면
-기준점이 앞으로 가지 않아 그 항목들이 창 밖으로 밀려나지 않는다. 전역 기준점이 아닌
+항목 중 상한·차단기로 **게이트를** 미룬 것과 미확정 초과분이 0 인 실행이다(실행 요약의
+`window_drained`). 미룬 항목이 있으면 기준점이 앞으로 가지 않아 그 항목들이 창 밖으로
+밀려나지 않는다. 추출 대기는 보지 않는다 — 이미 원장에 있어 창과 무관하다. 추출 대기까지
+보는 완결은 `drained` 이고, 그건 경보용이다 (pipeline.backlog). 전역 기준점이 아닌
 이유: 한 소스만 죽어 있던 동안 다른 소스의 성공이 기준점을 옮기면 그 기간을 잃는다.
 
 날짜는 전부 **UTC 날짜**다 — `published_at` 이 UTC 날짜이기 때문이다 (ADR-023).
@@ -127,7 +129,8 @@ def last_drained(runs_dir: Path | None, source_name: str, *, today: date, policy
         run_day = date.fromisoformat(record["today"])
         if run_day < floor:
             break
-        if record.get("drained"):
+        # `window_drained` 가 생기기 전의 기록은 `drained` 가 같은 뜻(게이트 쪽 완결)이다.
+        if record.get("window_drained", record.get("drained")):
             return run_day
     return NO_DRAINED_RUN if seen else None
 

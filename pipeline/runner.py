@@ -72,6 +72,7 @@ from obsidian_writer.writer import resolve_output_dir, vault_index, write_note
 from pipeline.admission import (
     REFUSED,
     UNDATED_ADMITTED,
+    UNDATED_DEFERRED,
     Admission,
     WindowPolicy,
     check_silence,
@@ -80,6 +81,7 @@ from pipeline.admission import (
     today_utc,
     window_policy,
 )
+from pipeline.backlog import HEAD_SIZE, find_evictions, previous_backlog
 from pipeline.ledger import DEFAULT_LEDGER_DIR, Ledger, LedgerEntry, now_iso
 
 DEFAULT_RUNS_DIR = PROJECT_ROOT / "data" / "pipeline" / "runs"
@@ -295,7 +297,11 @@ class RunReport:
     # 실행 요약에서 가를 수 있어야 한다 (D-103).
     fetch: dict[str, dict[str, Any]] = field(default_factory=dict)
     # 소스별 수용 창과 완결 여부. 다음 실행의 기준점이 여기서 나온다 (ADR-023).
+    # `window_drained` 는 창 기준점용(게이트 쪽만), `drained` 는 추출 대기까지 본다.
     window: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 소스별 피드 맨 앞 doc_id 와 이번에 미룬 doc_id. 다음 실행이 이것과 피드를 비교해
+    # 처리되지 않고 밀려난 항목을 센다 (pipeline.backlog).
+    backlog: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     # 이 실행에 걸린 상한과 그 출처(config | cli). 상시 승인은 "config 상한으로 한 번
     # 수동 실행했다"를 선행 조건으로 보는데, 그 사실이 여기서만 확인된다 (ADR-025).
     limits: dict[str, Any] = field(default_factory=dict)
@@ -356,6 +362,7 @@ class RunReport:
             "sources": {name: dict(t) for name, t in self.sources.items()},
             "fetch": self.fetch,
             "window": self.window,
+            "backlog": self.backlog,
             "load": dict(self.load),
             "stale": self.stale,
             "breaker_tripped": self.breaker_tripped,
@@ -413,14 +420,16 @@ def run_llm_stages(
             continue
         items: list[RawItem] = list(fetched.items)
         tally["collected"] = len(items)
-        report.inputs[source_name] = body_stats(items)
         if fetched.status is FetchStatus.EMPTY:
             print(f"[info] {source_name}: 0건 — 피드는 정상이고 항목이 없다", file=sys.stderr)
         _check_silence(config, source_name, items, today=today, tally=tally, report=report)
         admission = _admission(policy, runs_dir, source_name, today=today)
+        report.inputs[source_name] = body_stats(items)
+        feed_ids = [doc_id_for(str(item.url)) for item in items]
+        previous = previous_backlog(runs_dir, source_name)
+        deferred: dict[str, list[str]] = {"gate": [], "extraction": []}
 
-        for item in items:
-            doc_id = doc_id_for(str(item.url))
+        for item, doc_id in zip(items, feed_ids):
             if doc_id in handled:
                 tally["duplicate_in_run"] += 1
                 continue
@@ -442,6 +451,8 @@ def run_llm_stages(
                 verdict = admission.check(item.published_at)
                 if verdict in REFUSED:
                     tally[verdict] += 1
+                    if verdict == UNDATED_DEFERRED:
+                        deferred["gate"].append(doc_id)
                     continue
                 if verdict == UNDATED_ADMITTED:
                     tally[verdict] += 1
@@ -457,6 +468,7 @@ def run_llm_stages(
                     or totals["gate_calls"] >= limits.max_gate_calls
                 ):
                     tally["deferred_gate"] += 1
+                    deferred["gate"].append(doc_id)
                     continue
                 tally["gate_calls"] += 1
                 totals["gate_calls"] += 1
@@ -493,6 +505,7 @@ def run_llm_stages(
                 or totals["extract_calls"] >= limits.max_extractions
             ):
                 tally["deferred_extraction"] += 1
+                deferred["extraction"].append(doc_id)
                 continue
             tally["extract_calls"] += 1
             totals["extract_calls"] += 1
@@ -535,10 +548,23 @@ def run_llm_stages(
             report.extracted_ids.setdefault(source_name, []).append(doc_id)
             print(f"[ok] {doc_id} -> {path.name}", file=sys.stderr)
 
+        _record_backlog(
+            source_name, feed_ids, deferred, previous, tally=tally, report=report,
+            still_pending=lambda d: classify(
+                ledger.get(d), stored=store.path_for(d).exists(), gate_key=gate_key
+            ) in (NEEDS_GATE, NEEDS_EXTRACTION),
+        )
+
         if admission is not None:
-            # 완결 = 창을 통과한 것 중 미룬 것이 없다. 미뤘으면 기준점이 앞으로 가지 않는다.
-            drained = tally["deferred_gate"] == 0 and tally["undated_deferred"] == 0
-            report.window[source_name] = {**admission.window.summary(), "drained": drained}
+            # 창 기준점은 **게이트 쪽**만 본다. 추출 대기는 이미 원장에 있어 창과 무관하다 —
+            # 그것까지 걸면 추출 상한이 모자란 소스는 창이 늘 상한(14일)에 머문다.
+            window_drained = tally["deferred_gate"] == 0 and tally["undated_deferred"] == 0
+            # 완결은 추출 대기까지 본다. 게이트만 보던 때 arXiv 는 하루 10건을 추출하지
+            # 못하고 피드 밖으로 잃으면서 완결(true)을 냈다.
+            drained = window_drained and tally["deferred_extraction"] == 0
+            report.window[source_name] = {
+                **admission.window.summary(), "window_drained": window_drained, "drained": drained,
+            }
 
     report.breaker_tripped = sorted(breaker.tripped)
 
@@ -554,6 +580,34 @@ def body_stats(items: Sequence[RawItem]) -> dict[str, Any]:
         "body_chars_median": lengths[len(lengths) // 2],
         "body_empty": sum(1 for n in lengths if n == 0),
     }
+
+
+def _record_backlog(
+    source_name: str,
+    feed_ids: Sequence[str],
+    deferred: dict[str, list[str]],
+    previous: dict[str, Any] | None,
+    *,
+    tally: Counter,
+    report: RunReport,
+    still_pending: Callable[[str], bool],
+) -> None:
+    """직전 기록 대비 밀려난 항목을 세고, 다음 실행을 위해 이번 기록을 남긴다."""
+    evicted = find_evictions(previous, feed_ids, still_pending=still_pending)
+    if evicted.gate:
+        tally["evicted_gate"] = len(evicted.gate)
+    if evicted.extraction:
+        tally["evicted_extraction"] = len(evicted.extraction)
+    if evicted.rollover:
+        tally["feed_rollover"] = 1
+    if evicted.gate or evicted.extraction or evicted.rollover:
+        print(
+            f"[warn] {source_name}: 처리되지 않고 피드 밖으로 밀려남 — 게이트 대기 {len(evicted.gate)}"
+            f" · 추출 대기 {len(evicted.extraction)}"
+            + (" · 피드 넘김(직전 맨 앞 항목이 모두 사라짐, 건수 모름)" if evicted.rollover else ""),
+            file=sys.stderr,
+        )
+    report.backlog[source_name] = {"head": list(feed_ids[:HEAD_SIZE]), **deferred}
 
 
 def _check_silence(
