@@ -1,6 +1,6 @@
 # ADR-024: Obsidian 노트 frontmatter 에 발행일(`published_at`, UTC 날짜)을 싣고, 파일명과 `date`(처리일)는 그대로 둔다
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-29
 - **Decision:** 새로 쓰는 노트의 frontmatter 에 `published_at` 키를 `date` 바로 뒤에 추가한다. 값은 수집기가 정한 `RawItem.published_at`(UTC 날짜, ADR-023)이고, 피드에 발행일이 없으면 `null` 을 명시한다. 파일명 템플릿(`{date}-{source}-{slug}.md`)과 `date` · `processed_at` 은 바꾸지 않는다
 - **Scope:** `obsidian_writer/mapper.py` (`FRONTMATTER_ORDER`, `build_frontmatter`) · Obsidian Vault 노트 형식
@@ -67,7 +67,7 @@
 
 ### Negative
 
-- 이 ADR 이전의 노트 14건에는 키가 없다. `skip` 정책상 다시 쓰지 않는다 — 소급 여부는 별도 결정이다
+- **적용 이전 노트에는 `published_at` 이 없다** (2026-09-29 기준 14건 — 이 결정의 계기인 MSR 09-23 노트 포함). **소급하지 않는다.** 파이프라인이 Vault 노트를 직접 고치는 것은 `skip` 정책(ADR-010) 밖이고 "Vault 는 사용자 실데이터"라는 원칙을 깬다 (사용자 결정)
 - 값이 UTC 날짜라, 한국 매체 기사 중 KST 00:00~08:59 발행분은 현지 날짜보다 하루 이르게 보인다 (예: AI타임스 `Tue, 29 Sep 2026 07:27:02 +0900` → `2026-09-28`)
 
 ### Risks
