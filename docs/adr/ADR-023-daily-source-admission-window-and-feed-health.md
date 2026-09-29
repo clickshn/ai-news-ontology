@@ -129,6 +129,9 @@ session-15 에서 오케스트레이션이 섰고, 이제 매일 도는 것을 �
 
 - 게시 지연이 7일보다 긴 소스가 들어오면 조용히 빠진다. `out_of_window` 건수로만 보인다
 - 한국 매체 피드는 2~3일치만 주므로, 3일 넘게 쉬면 창과 무관하게 그 사이 항목을 잃는다
+  > ⚠️ **정정 (2026-09-29, 아래 Amendment 1).** AI타임스 gn 판 50건은 실측 **약 28시간치**다.
+  > 하루를 거르면 잃고, **상한 때문에 미룬 항목도 다음 실행 전에 밀려난다** — 창의 기준점이
+  > 막아 주는 것은 창 밖으로 밀려나는 것뿐이고, 피드 밖으로 밀려나는 것은 막지 못한다.
 - config 상한 기본값으로 도는 실행도 승인 게이트 대상이다. 매일 자동 실행과 실행 전 승인의 관계는 스케줄링과 함께 정한다 (이번 범위 밖)
 
 ## Implementation
@@ -145,7 +148,85 @@ session-15 에서 오케스트레이션이 섰고, 이제 매일 도는 것을 �
 - **Rollback:** `config.yaml` 에서 `pipeline.window` 를 빼면 창이 꺼지고(전량 수용), `max_silence_days` 를 빼면 갱신 멈춤 판정이 꺼진다. CLI 상한은 그대로 쓸 수 있다. 시간대 해석은 `naive_date_offset` 을 빼면 예전처럼 UTC 로 읽는다
 - **Migration Cost:** Low
 
+---
+
+## Amendment 1 — "완결"이 추출 대기를 보지 않았고, 피드 밖으로 밀려난 항목은 아무도 세지 않았다 (2026-09-29)
+
+- **Status:** Accepted (사용자, 2026-09-29)
+- **Decision Source:** Human
+
+### Context
+
+**무엇이 틀렸나.** Decision 의 "완결"은 게이트 쪽(`deferred_gate`·미확정 초과분)만 봤다.
+추출 상한 때문에 미룬 항목은 원장에 있어 창과 무관하게 이어서 처리된다고 봤는데, **그
+전제는 항목이 다음 실행 때 피드에 남아 있을 때만 성립한다.** 루프는 이번 피드에 있는
+항목만 돈다. 얕은 피드에서 미룬 항목은 다음 실행 전에 밀려나고, 밀려난 항목은 어느
+카운터에도 안 잡힌다. 그래서 다음 실행은 미룬 것이 없어 완결로 보인다.
+
+**사라진 것이 다 처리한 것의 모양으로 나온다** — `judge_human_gap`(D-087), 무시한 gzip
+헤더(D-104), 200 을 주며 멈춘 ZDNet(이 ADR 의 `max_silence_days`)에 이은 네 번째 사례다.
+
+### Decision
+
+- **완결을 둘로 가른다.** 실행 요약 `window.<소스>` 에
+  - `window_drained` — 창 기준점용. **기존 정의 그대로**(`deferred_gate == 0` 이고 미확정 초과분 0). `last_drained` 가 이것을 읽고, 이 필드가 없는 옛 기록은 `drained` 를 같은 뜻으로 읽는다
+  - `drained` — 경보용. 위에 **`deferred_extraction == 0`** 을 더한다. `not_drained` 경보의 사유에 추출 대기 건수와 "기준점이 가는가"를 함께 적는다
+- **밀려난 항목을 센다.** 실행 요약에 `backlog.<소스> = {head, gate, extraction}` (피드 맨 앞 doc_id 5개, 이번에 미룬 doc_id) 를 남긴다. 다음 실행이 그 소스의 **마지막 기록**과 지금 피드를 비교해
+  - `evicted_gate` / `evicted_extraction` — 미뤘던 것 중 지금 피드에 없고 원장상 여전히 대기인 것. 손실이 난 **다음 실행에서** 센다
+  - `feed_rollover` — 직전 맨 앞 5개가 하나도 없다. 그 사이 피드 깊이보다 많이 들어왔다는 뜻이고, **건수는 모른다**(본 적 없는 항목은 셀 대상이 없다)
+- 두 신호는 경보 종류 `evicted` · `feed_rollover` 로 올리고 **첫 회부터 경고**다. `not_drained` 는 항목이 아직 피드에 남아 있어 1회는 정보다. 둘 다 실패(종료 코드)로 세지 않는다 — 용량 문제이지 장애가 아니다
+- 함께 바뀐 설정·기록 (사용자 결정, 2026-09-29): AI타임스 게이트 상한 40 → **50(피드 깊이)** · arXiv 추출 10 → **20** · 수동 `run` 도 품질 지표를 기록 · 본문 길이 중앙값은 **창 안 항목**으로 잰다(`inputs.<소스>.feed_items` 에 피드 전체 건수)
+
+### Rationale
+
+1. 기준점까지 추출 대기에 묶지 않는다. 추출 대기는 이미 원장에 있어 창과 무관하고, 묶으면 추출 상한이 모자란 소스는 기준점이 영영 안 움직여 창이 늘 14일 상한에 머문다 — `window_capped`(심각)이 상시 떠서 **경보가 정상 상태가 된다**
+2. 게이트 상한을 피드 깊이로 두면 게이트 쪽 밀려남은 구조적으로 0 이다. 추출 상한은 "얼마나 많이 다룰 것인가"라서 주제 범위 판단이고, 손실 규모(`evicted_extraction`)를 본 뒤 정한다 (사용자)
+3. arXiv 는 피드 20건·통과율 100% 에서 추출 10 이면 절반이 확정 손실이고, 논문이라 가치가 높다 (사용자)
+
+### Evidence
+
+- **Production Data:** 2026-09-29 첫 수동 전량 실행(`pipeline-20260929-152223`, 게이트 80 · 추출 36 · 실패 0). arXiv 게이트 20/20 통과 · 추출 10 · 미룬 추출 10 인데 `drained: true`. AI타임스 게이트 40(상한) · 통과 25 · 미룬 게이트 7 · 미룬 추출 11. NVIDIA 미룬 게이트 10 · 추출 6, OpenAI 미룬 게이트 6 · 추출 4 (둘 다 피드가 깊어 밀려나지 않는다)
+- **Experiment:** AI타임스 gn 판 50건 = 09-28 11:05 ~ 09-29 14:45 KST, **27.7시간** · 환산 하루 42.5건 · 최근 24시간 35건. 루프가 피드 순서(최신 먼저)로 돌아 미룬 항목은 가장 오래된 것이다 — 하루 새 글이 약 38건이면 다음 실행 전에 밀려난다
+- **Production Data:** 같은 실행의 OpenAI 본문 길이는 피드 전체 1234건 기준(0자 106건)이었고 그중 1212건이 창 밖이다
+
+### Alternatives
+
+#### `drained` 하나에 추출 대기까지 포함 (기준점도 그것으로)
+
+- **Pros:** 필드가 하나다
+- **Cons:** 추출 상한이 모자란 소스의 창이 늘 14일 상한에 머문다
+- **Rejected because:** `window_capped`(심각)이 상시 떠서 경보의 의미가 사라진다 (Rationale 1)
+
+#### 원장 항목에 밀려남 표시 필드를 둔다
+
+- **Pros:** 실행 요약을 지워도 남는다
+- **Cons:** 원장 형식이 바뀐다
+- **Rejected because:** 원장 형식 변경(ADR-022)을 부른다. 실행 요약은 이미 창 기준점의 근거라 같은 자리에 둔다
+
+#### 피드 전체 doc_id 를 남겨 넘김 건수를 계산
+
+- **Pros:** 넘김 전후의 겹침을 정확히 본다
+- **Cons:** OpenAI 는 1234건이다
+- **Rejected because:** 그래도 **한 번도 못 본 항목은 셀 수 없다.** 넘김은 있다는 사실만 남기면 된다
+
+### Consequences
+
+- **Positive:** arXiv 처럼 매일 잃으면서 완결을 내던 소스가 `not_drained` · `evicted` 로 드러난다. AI타임스 추출 상한을 정할 근거(`evicted_extraction`)가 쌓인다. 수동 실행에서도 품질 기준선이 쌓여, 자동 실행 전에 임계값을 정할 수 있다
+- **Negative:** AI타임스는 추출 상한 15 가 하루 통과(약 24건)보다 작아, 상한을 정할 때까지 `not_drained`(2회째부터 경고)와 `evicted` 경고가 **매 실행 뜬다.** 이건 거짓 경보가 아니라 실제 손실이다
+- **Risks:** 밀려남은 **한 실행 늦게** 센다. 기록이 생기기 전(이 Amendment 이전)의 손실은 소급해서 세지 못한다. 실행 요약을 지우면 비교 기준이 사라져 그 다음 실행은 아무것도 세지 않는다. 기사 삭제만으로도 맨 앞 5개가 사라지면 `feed_rollover` 가 거짓으로 뜰 수 있다
+
+### Implementation
+
+- [x] `pipeline/backlog.py` (신규) · `pipeline/runner.py` (`backlog` 기록 · 두 완결 · 창 안 본문 길이 · `run` 의 품질 지표) · `pipeline/admission.py` (`window_drained` 우선 · `SourceWindow.contains`) · `pipeline/alerts.py` (`evicted` · `feed_rollover`) · `pipeline/schedule.py` (품질 계산을 `run_pipeline` 으로 이동)
+- [x] 테스트 15건 + 변이 검사 11/11 (임시 복사본)
+- [x] `config.yaml`: AI타임스 `gate: 50` · arXiv `extract: 20` · 피드 깊이 주석 정정
+
+## Review Trigger
+
+- **Recheck if:** `evicted_extraction` 이 AI타임스에서 수 회 기록된 뒤 — 추출 상한 15 를 정하는 근거로 쓰고, 그 결정 뒤 이 Amendment 를 다시 본다 (사용자)
+- **Status of this ADR:** **Accepted 유지 — "완결"의 정의와 한국 매체 피드 깊이 서술은 Amendment 1 로 정정됐다.** 창 결정 자체는 번복되지 않았다. 창 기준점의 정의도 그대로다(`window_drained`)
+
 ## References
 
-- **Related ADR:** ADR-022 (원장 · `doc_id` 중복 판정), ADR-005 (소스 구성과 본문 커버리지)
-- **Documentation:** README 결정 로그 D-106(이 결정) · D-105(소스 재편) · D-102 · D-103 · D-104, `docs/handoff/session-16.md`, `pipeline/admission.py`
+- **Related ADR:** ADR-022 (원장 · `doc_id` 중복 판정), ADR-005 (소스 구성과 본문 커버리지), ADR-025 (경보 누적 — Amendment 1 의 두 경보 종류가 여기에 들어간다)
+- **Documentation:** README 결정 로그 D-106(이 결정) · D-105(소스 재편) · D-102 · D-103 · D-104 · **D-111 · D-112 · D-113 (Amendment 1)**, `docs/handoff/session-16.md` · `docs/handoff/session-18.md`, `pipeline/admission.py` · `pipeline/backlog.py`
