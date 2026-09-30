@@ -175,10 +175,12 @@ pipeline:
 #    목적지·모델·프롬프트·소스·상한·목적지 결정 코드를 대조하고, 다르면 멈춘다.
 #    만료(14일)와 표본 수는 **여기가 아니라 코드 상수**다 — pipeline/approval.py.
 schedule:
-  time: null                  # "HH:MM" 로컬 시각. 사용자가 채운다. 등록 스크립트가 읽는다
+  time: "08:10"               # "HH:MM" 로컬 시각. 등록 스크립트가 읽는다. PC 사용 08:00~17:00 —
+                              #   부팅 뒤 10분, 실패해도 AI타임스 여유(약 4시간) 안에 수동 복구 가능
   readiness:                  # 엔드포인트 TCP 연결만 본다 (HTTP·페이로드 없음). 끝까지 안 닿으면
-    wait_minutes: 30          #   "환경 미준비"(종료 코드 5) — 차단기(장애)와 따로 센다.
-    interval_seconds: 60      #   VPN 이 필요한 환경이면 VPN 이 붙는 시간을 여기서 흡수한다
+    wait_minutes: 0.5         #   "환경 미준비"(종료 코드 5) — 차단기(장애)와 따로 센다.
+    interval_seconds: 10      #   VPN 불필요 환경이라 부팅 직후 네트워크 스택만 흡수한다(3회, 약 35초).
+                              #   ⚠️ 간격이 대기보다 길면 1회만 시도한다 — 60초 간격 · 30초 대기 = 1회
     connect_timeout_seconds: 5
   absent_after_hours: 36      # 마지막 실행이 이보다 오래면 SessionStart 훅이 ⚠️ (실행 부재)
   toast: true                 # 심각 등급에만 Windows 토스트
