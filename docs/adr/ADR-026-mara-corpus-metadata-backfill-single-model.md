@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (사용자, 2026-10-02)
 - **Date:** 2026-10-02
-- **Decision:** MARA 의 현재 색인 코퍼스 37건(스냅샷 arXiv 16 + 계약 export 의 색인 가능 23 − 병합 2)의 온톨로지 메타를 `gemma-4-31B-it` + `extract_ontology.v4.md` 로 **전부** 다시 추출한다. 게이트는 다시 태우지 않는다 — 문서 구성 37건을 고정하고 메타만 바꾼다. 원래 게이트를 통과한 이력이 있는 레코드(23건)는 그 이력(`gate_model` · `gate_prompt_version`)을 보존하고, 게이트를 거친 적이 없는 레코드(14건)만 `gate_model: null` 로 둔다. 이번 실행에서 게이트를 생략했다는 사실은 별도 필드로 표시한다. 실행은 운영 체크아웃과 분리된 git worktree 의 별도 보존소에서 backfill 로 표시해 하고, 운영 관측 큐에 섞지 않는다. export 는 그 보존소에서 **MARA 코퍼스 doc_id 37건만** 내보내고 건수 37 을 검증한다. 새로 라벨이 붙는 14건은 MARA 측정 전에 사람이 감사(정확도 기록)만 하고 라벨은 고치지 않는다
+- **Decision:** MARA 의 현재 색인 코퍼스 37건(스냅샷 arXiv 16 + 계약 export 의 색인 가능 23 − 병합 2)의 온톨로지 메타를 `gemma-4-31B-it` + `extract_ontology.v4.md` 로 **전부** 다시 추출한다. 게이트는 다시 태우지 않는다 — 문서 구성 37건을 고정하고 메타만 바꾼다. 원래 게이트를 통과한 이력이 있는 레코드(23건)는 그 이력(`gate_model` · `gate_prompt_version`)을 보존하고, 게이트를 거친 적이 없는 레코드(14건)만 `gate_model: null` 로 둔다. 이번 실행에서 게이트를 생략했다는 사실은 export 레코드가 아니라 **채우기 전용 보존소의 실행 매니페스트**에 남기고, 계약은 1.0 을 유지한다. 실행은 운영 체크아웃과 분리된 git worktree 의 별도 보존소에서 backfill 로 표시해 하고, 운영 관측 큐에 섞지 않는다. export 는 그 보존소에서 **MARA 코퍼스 doc_id 37건만** 내보내고 건수 37 을 검증한다. 새로 라벨이 붙는 14건은 MARA 측정 전에 사람이 감사(정확도 기록)만 하고 라벨은 고치지 않는다
 - **Scope:** `export/` (backfill 입력 구성·추출·선택 export — worktree 브랜치에서 구현) · 별도 보존소 · MARA 반입용 export 1건. 운영 파이프라인(`pipeline/`)·운영 보존소·Vault 는 범위 밖
 - **Decision Source:** Human
 
@@ -24,7 +24,7 @@ MARA 는 14건만 채우는 방안을 이미 기각했다(MARA ADR-022 Alternati
 - 편집 가능 설치(`.venv` 의 editable finder)가 `collectors` · `eval` · `extraction` · `observability` · `obsidian_writer` 를 운영 폴더로 매핑한다. 레포의 모든 데이터 경로는 `Path(__file__)` 기준이라, 모듈이 운영 폴더에서 import 되면 로그·`.env`·config 가 운영 쪽으로 간다.
 - MARA 로더는 `data/corpus/<source>/*.jsonl` 을 **전부** 합치고, 스냅샷↔export 외의 `doc_id` 중복은 실패시킨다(계약 §7-2). 기존 30건과 같은 `doc_id` 를 담은 새 export 는 옛 jsonl 을 빼야 들어간다.
 - 메타 재추출과 게이트 이력 보존은 계약 1.0 안에서 된다. `extraction_model` 값 변경과 14건의 `gate_model: null` 은 형식 변경이 아니다(계약 §3.3 은 "게이트를 거치지 않았으면 null"을 허용한다). 23건의 원래 게이트 이력(`claude-haiku-4-5-20251001` · `relevance_gate.v1.md`)은 MARA jsonl 의 provenance 에 그대로 있어 운영 보존소 없이 옮길 수 있다.
-- **게이트 생략 표시 필드는 계약 1.0 에 없다.** provenance 에 선택 필드를 더하는 것은 계약 §9 의 minor(1.1) 사안이다. MARA 로더는 major 와 필수 키만 검사하고 모르는 키를 거부하지 않으므로(`contract_import.validate_record`) 기술적으로는 들어가지만, **계약 문서를 먼저 고친다**는 원칙상 MARA 쪽 계약 개정(1.1)이 이 필드를 내보내는 것보다 앞서야 한다.
+- 게이트 생략을 레코드 필드로 표시하려면 계약 1.0 에 없는 provenance 선택 필드가 필요하고, 그건 계약 §9 의 minor(1.1) 사안이다(MARA 로더는 모르는 키를 거부하지 않아 기술적으로는 들어간다, `contract_import.validate_record`). 이 안은 아래 Alternatives 에서 기각했다.
 - 기존 `export` 는 보존소 전체를 내보낸다. 운영 보존소에는 파이프라인 실행분이 섞여 있다(232건 중 202건).
 
 ## Decision
@@ -35,7 +35,8 @@ MARA 는 14건만 채우는 방안을 이미 기각했다(MARA ADR-022 Alternati
 - **Architecture:** 운영 폴더 밖의 git worktree + 그 worktree 전용 가상환경·`.env`·보존소·관측 경로. 입력은 MARA 레포를 **읽기만** 해서 만든다 — 스냅샷 `data/corpus/arxiv/*.json` 14건 + 계약 export jsonl 의 색인 가능 23건. 운영 보존소는 입력원으로 쓰지 않는다.
 - **Implementation:**
   - 37건 doc_id 목록을 MARA 코퍼스에서 결정적으로 유도하고 파일로 고정한다. 유도 결과가 37이 아니면 멈춘다.
-  - 보존 레코드에 backfill 표시를 남긴다. 게이트 필드는 원래 이력을 옮긴다 — 23건은 MARA jsonl provenance 의 `gate_model` · `gate_prompt_version`, 14건은 `null`. 이번 실행의 게이트 생략은 별도 provenance 필드(이름은 계약 1.1 개정에서 정한다)로 표시한다.
+  - 보존 레코드에 backfill 표시를 남긴다. 게이트 필드는 원래 이력을 옮긴다 — 23건은 MARA jsonl provenance 의 `gate_model` · `gate_prompt_version`, 14건은 `null`. 이번 실행의 게이트 생략은 레코드에 싣지 않는다.
+  - 채우기 전용 보존소에 **실행 매니페스트**를 남긴다: 실행 유형 `backfill`, 게이트 생략과 그 근거(ADR-026), 대상 doc_id 37건, 추출 모델 · 프롬프트 버전 · 프롬프트 LF 해시(ADR-027).
   - 관측은 운영 큐(`observability/logs/`)에 쓰지 않는다.
   - export 는 backfill 보존소에서 고정 목록 37건만 고르고, 건수와 doc_id 집합이 목록과 같지 않으면 실패한다.
   - 사람 감사용 표(doc_id · 제목 · 초록 앞부분 · gemma 라벨)를 14건에 대해 만든다. 감사 결과는 기록만 하고 레코드를 고치지 않는다.
@@ -73,6 +74,12 @@ MARA 는 14건만 채우는 방안을 이미 기각했다(MARA ADR-022 Alternati
 - **Cons:** 호출 +30. 스킵이 나오면 그 문서가 코퍼스에서 빠진다.
 - **Rejected because:** 문서 구성 37건을 고정하고 메타만 바꾼다는 조건을 깬다.
 
+### 게이트 생략을 export 레코드의 provenance 선택 필드로 싣는다 (계약 1.1)
+
+- **Pros:** 레코드 하나만 보고도 "이번 추출에서 게이트를 다시 태우지 않았다"를 알 수 있다.
+- **Cons:** 계약을 1.1 로 올리고, 그 개정이 export 보다 먼저여야 한다.
+- **Rejected because:** MARA 측정은 게이트 정보를 쓰지 않고, 기존 필드만으로 사실관계가 드러난다 — 23건 = 원래 게이트 이력 + gemma 재추출, 14건 = 게이트 `null` + gemma 추출. 3부(2026-10-02)에 채택했던 "별도 필드" 안은 실행 매니페스트 방식으로 **대체됐다**(사용자, 같은 날).
+
 ### 감사 뒤 사람이 라벨을 고친다
 
 - **Pros:** 감사에서 틀린 것으로 확인된 라벨이 코퍼스에 남지 않는다.
@@ -94,7 +101,7 @@ MARA 는 14건만 채우는 방안을 이미 기각했다(MARA ADR-022 Alternati
 - 기존 23건의 Opus 라벨이 gemma 라벨로 바뀐다. MARA v1.2 의 층 A 측정치는 옛 라벨 위에서 잰 값이 된다.
 - MARA 쪽에서 옛 jsonl 을 빼고 골든셋 `anchor_meta`(측정 전에 박는 값)를 다시 선언해야 한다 — MARA 세션의 일이다.
 - 한 레코드 안에 두 시점이 섞인다 — 23건은 게이트가 2026-09-17 의 Haiku, 추출이 이번 실행의 gemma 다. 게이트 생략 표시 필드가 그 사이를 설명한다.
-- 게이트 생략 표시 필드 때문에 계약을 1.1 로 올려야 하고, 그 개정이 export 보다 먼저다(MARA 반입 세션의 선행 작업이 하나 는다).
+- "이번 실행은 게이트를 생략했다"는 MARA 에 넘어가지 않는다. 생산자의 채우기 전용 보존소 매니페스트와 이 ADR 에만 있다.
 
 ### Risks
 

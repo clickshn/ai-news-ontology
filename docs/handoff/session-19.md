@@ -6,6 +6,7 @@
 - **테스트:** 돌리지 않음 (코드 변경 없음)
 - **읽은 것:** 이 레포의 `config.yaml` · `export/` · 보존소(`data/extractions/`, 읽기만) · `data/replays/` · 자동 실행 상태. MARA 의 계약 문서 · `data/corpus/` · `docs/eval/golden-set.json` · ADR-004·022·030 · `src/tools/contract_import.py` (전부 읽기만, MARA `git status` 깨끗한 것 확인)
 - **3부 (같은 날):** ADR-026·027 Accepted, 라벨 수정 기각 사유 추가, 결정 2 정정(게이트 이력 보존 + 별도 스킵 필드 → 계약 1.1 사안), E7 허용, `GUARD_FILES` 편입 여부를 병합 판단에 추가 → §7-2 · §9 · §12
+- **4부 (같은 날):** 게이트 스킵은 **레코드 필드로 넣지 않는다**, 계약 1.0 유지 — 채우기 전용 보존소의 실행 매니페스트에 남긴다. E9 철회. 3부의 "별도 필드" 안은 대체됐다 → §7-2 · §9 · §12
 - **ADR (`adr-skill:adr-recorder`, 3부에서 Accepted):** **ADR-026**(MARA 코퍼스 37건 메타를 한 모델로 backfill) · **ADR-027**(`prompt_sha256` = LF 정규화, 옛 값 대응표). 결정은 사용자, 2026-10-02 (§7)
 - **2부 (같은 날):** 사용자 결정 7건 + 운영 제약 → §7 ~ §11. 코드 변경 여전히 0
 
@@ -135,7 +136,7 @@ URL 은 전부 `http://arxiv.org/abs/<doc_id 의 ID>` (스냅샷 표기. 병합 
 ## 7. 결정 (사용자, 2026-10-02)
 
 1. **경로 B** — MARA 현재 코퍼스 37건 전체를 `gemma-4-31B-it` + `extract_ontology.v4.md`(현재 기본)로 통일한다.
-2. **재게이트하지 않는다.** 문서 구성 37건은 고정하고 메타만 재추출한다. 게이트 생략은 레코드에 기록한다. **(3부 정정)** 원래 게이트를 통과한 이력이 있는 레코드는 그 이력을 **보존**한다 — 23건 `gate_model = claude-haiku-4-5-20251001` · `gate_prompt_version = relevance_gate.v1.md`(MARA jsonl provenance 에서 옮긴다). 게이트를 거친 적이 없는 14건만 `gate_model: null`. 이번 실행의 생략은 **별도 필드**로 "게이트 스킵(backfill)"을 표시한다 → 이 필드는 계약 minor(1.1) 사안이다(§12).
+2. **재게이트하지 않는다.** 문서 구성 37건은 고정하고 메타만 재추출한다. 게이트 생략은 레코드에 기록한다. **(3부 정정)** 원래 게이트를 통과한 이력이 있는 레코드는 그 이력을 **보존**한다 — 23건 `gate_model = claude-haiku-4-5-20251001` · `gate_prompt_version = relevance_gate.v1.md`(MARA jsonl provenance 에서 옮긴다). 게이트를 거친 적이 없는 14건만 `gate_model: null`. **(4부 정정)** 이번 실행의 생략은 export 레코드에 **싣지 않는다** — 계약 1.0 유지. 채우기 전용 보존소의 **실행 매니페스트**에 남긴다: 실행 유형 `backfill`, 게이트 생략과 근거(ADR-026), 대상 doc_id 37건, 추출 모델 · 프롬프트 버전 · LF 해시. 이유: MARA 측정은 게이트 정보를 쓰지 않고, 기존 필드만으로 사실관계가 드러난다(23건 = 원래 게이트 이력 + gemma 재추출, 14건 = 게이트 `null` + gemma 추출). 3부의 "별도 필드" 안은 이 방식으로 대체됐다.
 3. **사람 확인은 감사로만.** 새로 라벨이 붙는 14건(정답 10 + 비정답 4)을 MARA 측정 전에 사용자가 확인해 정확도를 기록하고, 라벨은 고치지 않는다. 확인용 표는 §11.
 4. **`prompt_sha256` 은 LF 정규화로 정의.** 옛 CRLF 값과의 대응은 ADR-027 의 표.
 5. **계약 문서 문구(S3·S4)는 MARA 반입 세션에서 함께** 고친다. ADR-027 의 §3.3 정의 문구도 같은 세션.
@@ -165,15 +166,15 @@ URL 은 전부 `http://arxiv.org/abs/<doc_id 의 ID>` (스냅샷 표기. 병합 
 | E5 | worktree **전용 `.env`** — `VLLM_BASE` · `VLLM_MODEL` 만. `OBSIDIAN_VAULT_PATH` · 벤더 키 · Langfuse 키는 넣지 않는다 (§10 P2) | 키 이름만 출력 |
 | E6 | **경로 점검 스크립트**가 아래 전부를 출력하고, 하나라도 `<운영 폴더>\` 로 시작하면 **멈추고 목록을 보고한다**: 패키지 7개(`collectors` · `eval` · `export` · `extraction` · `observability` · `obsidian_writer` · `pipeline`)의 `__file__`, `DEFAULT_STORE_DIR` · `DEFAULT_OUT_DIR` · `DEFAULT_REPLAY_DIR` · `DEFAULT_LOG_DIR` · `DEFAULT_LEDGER_DIR` · `DEFAULT_RUNS_DIR` · `PIPELINE_DIR` · `DEFAULT_LOCK_PATH`, config 경로, `.env` 경로, 해석된 vLLM 엔드포인트 해시 | 스크립트 출력 |
 | E7 | ✅ **충족** — §10 의 "구조상 공유" 3건(P3 git 저장소 · P4 MARA 레포 읽기 · P5 vLLM 엔드포인트, 시간대 회피로 분리)을 사용자가 허용했다 (2026-10-02) | — |
-| E9 | **계약 1.1 개정 순서가 정해졌다** — 게이트 스킵 표시 필드를 내보내기 전에 MARA 계약 문서가 그 필드를 정의한다(§12). 구현·실행은 먼저 해도 되지만 **필드가 든 export 를 MARA 에 넘기는 것은 개정 뒤** | 사용자 답 |
+| ~~E9~~ | **철회 (4부)** — 게이트 스킵을 레코드 필드로 넣지 않으므로 계약 1.1 개정이 필요 없다 | — |
 | E8 | 테스트가 worktree 에서 통과한다 (`<worktree venv> -m pytest tests/ -q`) | 기준 965 passed + 새 테스트 |
 
 ### 9.2 구현 (worktree 브랜치, LLM 호출 없음)
 
 1. **37건 목록 고정** — MARA `data/corpus/arxiv/*.json` 의 doc_id ∪ `data/corpus/*/*.jsonl` 의 `indexable=true` doc_id. 37 이 아니면 예외. 결과를 레포 파일로 커밋한다(목록이 곧 계약 범위).
 2. **입력 구성 (MARA 읽기 전용)** — 스냅샷 16건은 스냅샷 `.json` 에서(14 + 병합 2, 병합 2건은 jsonl text = 스냅샷 text 확인됨), 나머지 21건(arXiv 8 + news 13)은 jsonl 레코드에서 `RawItem` 을 만든다. source_name · title · published_at · collected_at · tags(lang) 는 기존 값 유지. 운영 보존소는 읽지 않는다 — jsonl 30건 = 운영 보존소 원본 30건, 불일치 0 (§10 아래 근거).
-3. **추출만** — 게이트 호출 없음. 보존 payload 의 `gate` 는 **원래 이력을 옮긴다**: 23건은 MARA jsonl provenance 의 `gate_model` · `gate_prompt_version`(그 외 `is_relevant` · `reason` · `prompt_sha256` 은 레코드 스키마에 없고 jsonl 에도 없다 — 옮기지 않는다는 것을 payload 에 표시), 14건은 `gate: null`. backfill 표시는 보존소 내부(`run_kind: "backfill"`)와 **레코드 provenance 의 새 선택 필드**(게이트 스킵, 이름은 계약 1.1 개정에서 정한다) 두 곳. observer = `NullObserver`(운영 큐 분리, 결정 6).
-   - **스키마 점검 결과 (구현 전 보고, 3부):** 게이트 이력 보존은 **현 스키마로 된다** — `export/record.py: provenance_block` 이 `gate["model"]` · `gate["prompt_name"]` 만 읽고, 23건 값은 MARA jsonl 에 있다. **별도 필드는 계약 1.0 에 없다.** MARA 로더는 major 와 필수 키만 검사해 모르는 키를 거부하지 않으므로(`contract_import.validate_record`) 기술적으로는 통과하지만, 계약 §9 상 선택 필드 추가는 **minor(1.1)** 이고 레코드의 `contract_version` 도 `"1.1"` 이 되어야 한다(`export/contract.py: CONTRACT_VERSION`). 계약 문서를 먼저 고친다는 원칙상 MARA 쪽 개정이 앞선다.
+3. **추출만** — 게이트 호출 없음. 보존 payload 의 `gate` 는 **원래 이력을 옮긴다**: 23건은 MARA jsonl provenance 의 `gate_model` · `gate_prompt_version`(그 외 `is_relevant` · `reason` · `prompt_sha256` 은 레코드 스키마에 없고 jsonl 에도 없다 — 옮기지 않는다는 것을 payload 에 표시), 14건은 `gate: null`. backfill 표시는 **채우기 전용 보존소 안에만** 둔다 — 항목별 `run_kind: "backfill"` 과 실행 매니페스트(실행 유형 `backfill` · 게이트 생략과 근거 ADR-026 · 대상 doc_id 37건 · 추출 모델 · 프롬프트 버전 · LF 해시). export 레코드와 `CONTRACT_VERSION`(`"1.0"`)은 바꾸지 않는다. observer = `NullObserver`(운영 큐 분리, 결정 6).
+   - **스키마 점검 결과 (구현 전 보고, 3부):** 게이트 이력 보존은 **현 스키마로 된다** — `export/record.py: provenance_block` 이 `gate["model"]` · `gate["prompt_name"]` 만 읽고, 23건 값은 MARA jsonl 에 있다. **별도 필드는 계약 1.0 에 없다.** MARA 로더는 major 와 필수 키만 검사해 모르는 키를 거부하지 않으므로(`contract_import.validate_record`) 기술적으로는 통과하지만, 계약 §9 상 선택 필드 추가는 **minor(1.1)** 이고 레코드의 `contract_version` 도 `"1.1"` 이 되어야 한다(`export/contract.py: CONTRACT_VERSION`). 계약 문서를 먼저 고친다는 원칙상 MARA 쪽 개정이 앞선다. → **4부에서 이 필드를 쓰지 않기로 했다**(실행 매니페스트로 대체, 계약 1.0 유지).
 4. **`prompt_sha256` LF 정규화** (ADR-027). `pipeline/runner.py` 가 같은 함수를 쓰므로 병합하면 운영 보존소 기록도 바뀐다 — 병합 판단 때 볼 항목으로 handoff 에 남긴다.
 5. **선택 export** — backfill 보존소 + 고정 목록. 레코드 수 ≠ 37 이거나 doc_id 집합 ≠ 목록이면 실패. `conformance.py` 로 자체검사.
 6. **mock 테스트** — 목록 유도(37 아님 → 실패), 게이트 생략 → `gate_model null`, 선택 export 건수 검증, LF 해시, 운영 경로 미사용.
@@ -247,9 +248,10 @@ doc_id · 제목 · 초록 앞부분은 MARA 스냅샷에서 읽었다(공개 ar
 
 | 항목 | 내용 |
 |---|---|
-| 🆕 **게이트 스킵 필드 → 계약 1.1** | §9.2-3 의 스키마 점검 결과. 필드 자체는 MARA 로더를 통과하지만 계약상 minor 인상이다. 정할 것: ① 필드 이름·값(예: `gate_skipped: "backfill"`) ② MARA 계약 개정(1.1)을 **언제** 하는가 — 반입 세션에서 S3·S4·§3.3 문구와 함께 할지, 그 전에 따로 할지(E9) ③ 개정 전에 생산자가 그 필드를 담은 export 를 만들어 두는 것은 괜찮은가(넘기지만 않으면) |
+| ~~게이트 스킵 필드 → 계약 1.1~~ | ✅ **닫음 (4부)** — 레코드 필드로 넣지 않는다, 계약 1.0 유지, 채우기 보존소의 실행 매니페스트에 남긴다. E9 철회. 반입 세션의 계약 작업은 S3·S4 문구 수정 |
+| **ADR-027 의 계약 §3.3 정의 문구** | 4부 지시는 "반입 세션에서는 S3·S4 문구 수정만"이다. ADR-027(Accepted)의 Implementation 에는 "MARA 계약 §3.3 `prompt_sha256` 정의 문구 수정"이 남아 있다 — 이것을 반입 세션에 포함할지, 따로 할지 확인 필요. ADR-027 은 고치지 않았다 |
 | **worktree 기준 브랜치** | 기본안은 `chore/mara-meta-survey` 에서 분기(ADR 이 따라간다). `main` 에서 분기하면 ADR-026·027 이 구현 브랜치에 없다 |
-| **병합 시 볼 것** | ① ADR-027 구현이 `pipeline/runner.py`(`GUARD_FILES`) 가 쓰는 함수를 바꾼다 — 병합하면 운영 보존소 해시가 바뀌는데 승인 대조는 잡지 않는다 ② 🆕 **`export/runner.py` 를 `GUARD_FILES` 에 넣을지** — 넣으면 변경 시 자동 실행이 멈추고 재승인(ADR-025 의 의도한 비용), 안 넣으면 운영 보존소 기록을 바꾸는 코드가 대조 밖에 남는다 ③ 계약 1.1 이면 `CONTRACT_VERSION` 도 바뀐다. 병합 판단은 자동 실행 관찰 세션 뒤 사용자 |
+| **병합 시 볼 것** | ① ADR-027 구현이 `pipeline/runner.py`(`GUARD_FILES`) 가 쓰는 함수를 바꾼다 — 병합하면 운영 보존소 해시가 바뀌는데 승인 대조는 잡지 않는다 ② 🆕 **`export/runner.py` 를 `GUARD_FILES` 에 넣을지** — 넣으면 변경 시 자동 실행이 멈추고 재승인(ADR-025 의 의도한 비용), 안 넣으면 운영 보존소 기록을 바꾸는 코드가 대조 밖에 남는다 병합 판단은 자동 실행 관찰 세션 뒤 사용자 |
 
 ## 세션 종료 상태
 
