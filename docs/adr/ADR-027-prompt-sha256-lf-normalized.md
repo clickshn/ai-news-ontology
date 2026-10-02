@@ -1,6 +1,6 @@
 # ADR-027: export 계약의 `provenance.prompt_sha256` 은 줄바꿈을 LF 로 정규화한 프롬프트 파일 바이트의 sha256 이다
 
-- **Status:** Proposed
+- **Status:** Accepted (사용자, 2026-10-02). 구현의 main 병합은 별도 판단이다
 - **Date:** 2026-10-02
 - **Decision:** `provenance.prompt_sha256` 을 "디스크 파일의 원시 바이트"가 아니라 **CRLF 를 LF 로 바꾼 바이트의 sha256** 으로 정의한다. 이 값은 git 에 커밋된 내용의 해시와 같아 어느 클론에서도 재현된다. 이미 나간 CRLF 값(`9ff5a9d3…` 등)과 새 값의 대응을 아래 표로 고정한다
 - **Scope:** `export/runner.py: prompt_sha256` (export 레코드와 보존소 `extraction.prompt_sha256` / `gate.prompt_sha256` 의 출처) · MARA 출력 계약 §3.3 의 `prompt_sha256` 정의
@@ -74,7 +74,7 @@ MARA 에 이미 들어간 export(`ontology-20260917-120733`) 30건의 `prompt_sh
 
 ### Risks
 
-- `pipeline/runner.py` 가 이 함수를 쓰므로, 병합하면 운영 보존소 기록이 바뀌는데 자동 실행의 승인 대조는 이를 잡지 않는다(`export/runner.py` 는 `GUARD_FILES` 밖). 병합은 사용자가 자동 실행 관찰 세션 뒤에 정한다.
+- `pipeline/runner.py` 가 이 함수를 쓰므로, 병합하면 운영 보존소 기록이 바뀌는데 자동 실행의 승인 대조는 이를 잡지 않는다(`export/runner.py` 는 `GUARD_FILES` 밖). 병합은 사용자가 자동 실행 관찰 세션 뒤에 정한다. 그때 함께 정할 항목: **`export/runner.py` 를 `GUARD_FILES` 에 넣을지** — 넣으면 이 함수의 변경이 자동 실행을 멈추고 재승인을 요구하고(의도한 비용, ADR-025), 넣지 않으면 운영 보존소 기록을 바꾸는 코드가 승인 대조 밖에 남는다.
 - 대응표 밖의 옛 값(앞으로 만들 프롬프트)은 생기지 않는다 — 새 프롬프트는 처음부터 새 정의로 찍힌다.
 
 ## Implementation
@@ -83,6 +83,7 @@ MARA 에 이미 들어간 export(`ontology-20260917-120733`) 30건의 `prompt_sh
 - [ ] 테스트: CRLF 파일과 LF 파일이 같은 값을 내는지, v4 가 `25b17f44…` 인지
 - [ ] `export/conformance.py` 의 `prompt_sha256` 대조가 새 정의로 통과하는지
 - [ ] MARA 계약 §3.3 정의 문구 수정 (MARA 반입 세션, 계약 먼저)
+- [ ] main 병합 판단 (자동 실행 관찰 세션 뒤, 사용자) — `export/runner.py` 의 `GUARD_FILES` 편입 여부 포함
 
 ## Reversibility
 
