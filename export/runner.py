@@ -62,13 +62,18 @@ DEFAULT_POOL_FACTOR = 3
 
 
 def prompt_sha256(filename: str, *, prompt_dir: Path = PROMPT_DIR) -> str:
-    """프롬프트 **파일 원본**의 sha256.
+    """프롬프트 **파일**의 sha256 — 줄바꿈을 LF 로 정규화한 바이트 (ADR-027).
 
     `load_prompt()` 가 주석을 걷어낸 뒤의 문자열이 아니라 디스크의 바이트를
     센다. 계약 §12.2-3 이 "생산자 프롬프트 파일의 실제 sha256" 과 대조하기
     때문이고, 그래야 MARA 쪽에서 파일만 받아 같은 값을 재현할 수 있다.
+
+    CRLF 를 LF 로 바꾼 뒤 세는 이유: 원시 바이트를 세면 작업본이 CRLF 로
+    체크아웃된 클론(운영 폴더가 그렇다)과 LF 클론이 같은 커밋에서 다른 값을 낸다.
+    LF 정규화 값은 커밋된 내용의 해시와 같다. 옛 CRLF 값과의 대응은 ADR-027 의 표.
     """
-    return hashlib.sha256((prompt_dir / filename).read_bytes()).hexdigest()
+    data = (prompt_dir / filename).read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 def parse_take(values: Sequence[str]) -> dict[str, int]:

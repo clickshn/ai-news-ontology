@@ -111,10 +111,10 @@ MARA 는 14건만 채우는 방안을 이미 기각했다(MARA ADR-022 Alternati
 
 ## Implementation
 
-- [ ] worktree 생성(운영 폴더 밖) · worktree 전용 가상환경 · `VLLM_BASE` / `VLLM_MODEL` 만 담은 `.env`
-- [ ] 실행 전 경로 점검: 모든 패키지 `__file__`, 보존소·관측·config·`.env` 해석 경로가 운영 폴더 밖인지 출력하고 하나라도 겹치면 멈춘다
-- [ ] 37건 목록 유도·고정, 입력 구성(MARA 읽기 전용), backfill 표시, 게이트 생략, 관측 분리
-- [ ] 선택 export + 건수·집합 검증, mock 테스트
+- [x] worktree 생성(운영 폴더 밖) · worktree 전용 가상환경 · `VLLM_BASE` / `VLLM_MODEL` 만 담은 `.env`
+- [x] 실행 전 경로 점검: 모든 패키지 `__file__`, 보존소·관측·config·`.env` 해석 경로가 운영 폴더 밖인지 출력하고 하나라도 겹치면 멈춘다
+- [x] 37건 목록 유도·고정, 입력 구성(MARA 읽기 전용), backfill 표시, 게이트 생략, 관측 분리 — `export/backfill.py` · `export/mara_backfill_targets.json`
+- [x] 선택 export + 건수·집합 검증, mock 테스트 — `tests/test_export_backfill.py`
 - [ ] 소표본 3건 실행(별도 승인) → 형식 확인 → 나머지 34건 실행(별도 승인)
 - [ ] 14건 감사 표 작성 · 사용자 감사 · 정확도 기록
 

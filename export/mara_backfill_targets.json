@@ -1,0 +1,167 @@
+{
+  "range": "ADR-026",
+  "counts": {
+    "total": 37,
+    "snapshot": 16,
+    "export_indexable": 23,
+    "both": 2,
+    "gate_history": 23,
+    "gate_null": 14
+  },
+  "source_files": {
+    "data/corpus/arxiv/agent-evaluation.json": "950201bee497a18bf7ef7663b4feeb414a55636813d6fd6ff5bbefef3ca83861",
+    "data/corpus/arxiv/multiagent-llm.json": "486038eccfb7b870542d5dc1c17d2cdb95fdbdb5f3c9c3a50669edd1c89c71d0",
+    "data/corpus/arxiv/ontology-20260917-120733.jsonl": "538daaa0aaff6ea3a9b996ce110a972135a82f943d3e34bd3e721fc86e79cbc4",
+    "data/corpus/news/ontology-20260917-120733.jsonl": "ab53a1324cbf079c6b95f4558192e8a80a8bc1727a7539bf3c91942027972b90"
+  },
+  "doc_ids": [
+    {
+      "doc_id": "arXiv:2401.07324v3",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2404.01023v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2405.16887v2",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2406.00215v3",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2406.01893v2",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2410.09024v3",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2410.09114v2",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2412.05449v1",
+      "origin": "snapshot+export"
+    },
+    {
+      "doc_id": "arXiv:2412.20138v7",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2502.05227v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2512.02230v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2512.06196v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2512.13930v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2602.03128v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2602.16901v1",
+      "origin": "snapshot"
+    },
+    {
+      "doc_id": "arXiv:2605.21404v1",
+      "origin": "snapshot+export"
+    },
+    {
+      "doc_id": "arXiv:2609.19088v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19093v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19101v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19113v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19134v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19143v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19144v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "arXiv:2609.19145v1",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:0252e9379cd9f923",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:1047cd7bf162d6e0",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:14d2c76967ca2b60",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:3dd7208e3f2a1dde",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:42f467857601213c",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:4410122683c56925",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:509053e1f8b378dd",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:587009bd5b1aa4ce",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:7d2872733a614740",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:c076df17a63066ea",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:c45b8926d7935cd2",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:dfff960c99b416b4",
+      "origin": "export"
+    },
+    {
+      "doc_id": "news:f3899afd4d6a0a2d",
+      "origin": "export"
+    }
+  ]
+}

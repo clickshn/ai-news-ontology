@@ -79,9 +79,9 @@ MARA 에 이미 들어간 export(`ontology-20260917-120733`) 30건의 `prompt_sh
 
 ## Implementation
 
-- [ ] `export/runner.py: prompt_sha256` 을 LF 정규화로 변경 (ADR-026 worktree 브랜치)
-- [ ] 테스트: CRLF 파일과 LF 파일이 같은 값을 내는지, v4 가 `25b17f44…` 인지
-- [ ] `export/conformance.py` 의 `prompt_sha256` 대조가 새 정의로 통과하는지
+- [x] `export/runner.py: prompt_sha256` 을 LF 정규화로 변경 (ADR-026 worktree 브랜치)
+- [x] 테스트: CRLF 파일과 LF 파일이 같은 값을 내는지, v4 가 `25b17f44…` 인지
+- [x] `export/conformance.py` 의 `prompt_sha256` 대조가 새 정의로 통과하는지
 - [ ] MARA 계약 §3.3 정의 문구 수정 (MARA 반입 세션에서 S3·S4 문구와 함께, 계약 먼저. 계약 버전 판단은 그 세션에서 MARA 계약 §9 기준 — 사용자, 2026-10-02)
 - [ ] main 병합 판단 (자동 실행 관찰 세션 뒤, 사용자) — `export/runner.py` 의 `GUARD_FILES` 편입 여부 포함
 
