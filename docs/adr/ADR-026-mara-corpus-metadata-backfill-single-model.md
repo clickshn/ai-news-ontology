@@ -1,6 +1,6 @@
 # ADR-026: MARA 코퍼스 37건 전체의 온톨로지 메타를 한 모델(gemma-4-31B-it · v4)로 다시 추출하고, 재게이트 없이 격리된 backfill 보존소에서 그 37건만 내보낸다
 
-- **Status:** Accepted (사용자, 2026-10-02)
+- **Status:** Accepted
 - **Date:** 2026-10-02
 - **Decision:** MARA 의 현재 색인 코퍼스 37건(스냅샷 arXiv 16 + 계약 export 의 색인 가능 23 − 병합 2)의 온톨로지 메타를 `gemma-4-31B-it` + `extract_ontology.v4.md` 로 **전부** 다시 추출한다. 게이트는 다시 태우지 않는다 — 문서 구성 37건을 고정하고 메타만 바꾼다. 원래 게이트를 통과한 이력이 있는 레코드(23건)는 그 이력(`gate_model` · `gate_prompt_version`)을 보존하고, 게이트를 거친 적이 없는 레코드(14건)만 `gate_model: null` 로 둔다. 이번 실행에서 게이트를 생략했다는 사실은 export 레코드가 아니라 **채우기 전용 보존소의 실행 매니페스트**에 남기고, 계약은 1.0 을 유지한다. 실행은 운영 체크아웃과 분리된 git worktree 의 별도 보존소에서 backfill 로 표시해 하고, 운영 관측 큐에 섞지 않는다. export 는 그 보존소에서 **MARA 코퍼스 doc_id 37건만** 내보내고 건수 37 을 검증한다. 새로 라벨이 붙는 14건은 MARA 측정 전에 사람이 감사(정확도 기록)만 하고 라벨은 고치지 않는다
 - **Scope:** `export/` (backfill 입력 구성·추출·선택 export — worktree 브랜치에서 구현) · 별도 보존소 · MARA 반입용 export 1건. 운영 파이프라인(`pipeline/`)·운영 보존소·Vault 는 범위 밖

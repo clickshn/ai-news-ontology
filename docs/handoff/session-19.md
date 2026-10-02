@@ -249,8 +249,8 @@ doc_id · 제목 · 초록 앞부분은 MARA 스냅샷에서 읽었다(공개 ar
 | 항목 | 내용 |
 |---|---|
 | ~~게이트 스킵 필드 → 계약 1.1~~ | ✅ **닫음 (4부)** — 레코드 필드로 넣지 않는다, 계약 1.0 유지, 채우기 보존소의 실행 매니페스트에 남긴다. E9 철회. 반입 세션의 계약 작업은 S3·S4 문구 수정 |
-| **ADR-027 의 계약 §3.3 정의 문구** | 4부 지시는 "반입 세션에서는 S3·S4 문구 수정만"이다. ADR-027(Accepted)의 Implementation 에는 "MARA 계약 §3.3 `prompt_sha256` 정의 문구 수정"이 남아 있다 — 이것을 반입 세션에 포함할지, 따로 할지 확인 필요. ADR-027 은 고치지 않았다 |
-| **worktree 기준 브랜치** | 기본안은 `chore/mara-meta-survey` 에서 분기(ADR 이 따라간다). `main` 에서 분기하면 ADR-026·027 이 구현 브랜치에 없다 |
+| ~~ADR-027 의 계약 §3.3 정의 문구~~ | ✅ **닫음 (session 20, 사용자)** — MARA 반입 세션에서 S3·S4 와 함께 고친다. 계약 버전 판단은 그 세션에서 MARA 계약 §9 기준. ADR-027 Implementation 항목에 반영 |
+| ~~worktree 기준 브랜치~~ | ✅ **닫음 (session 20)** — `feat/mara-backfill` 은 `chore/mara-meta-survey`(`b2df527`)에서 분기, worktree `../ai-news-ontology-backfill` |
 | **병합 시 볼 것** | ① ADR-027 구현이 `pipeline/runner.py`(`GUARD_FILES`) 가 쓰는 함수를 바꾼다 — 병합하면 운영 보존소 해시가 바뀌는데 승인 대조는 잡지 않는다 ② 🆕 **`export/runner.py` 를 `GUARD_FILES` 에 넣을지** — 넣으면 변경 시 자동 실행이 멈추고 재승인(ADR-025 의 의도한 비용), 안 넣으면 운영 보존소 기록을 바꾸는 코드가 대조 밖에 남는다 병합 판단은 자동 실행 관찰 세션 뒤 사용자 |
 
 ## 세션 종료 상태
