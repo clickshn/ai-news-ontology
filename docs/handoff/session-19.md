@@ -212,24 +212,59 @@ URL 은 전부 `http://arxiv.org/abs/<doc_id 의 ID>` (스냅샷 표기. 병합 
 
 ## 11. 감사 표 (14건) — 사용자 확인용
 
-doc_id · 제목 · 초록 앞부분은 MARA 스냅샷에서 읽었다(공개 arXiv 초록). **gemma 라벨 칸은 본 실행 뒤 채운다.** 사용자는 각 행에 판정(맞음 / 틀림, 틀리면 정답 값)만 적고, 레코드는 고치지 않는다(결정 3). 정확도는 필드별(`release_type` · `tech_domains` 완전 일치 · `Agent` 포함 여부)로 정답 10 / 비정답 4 를 나눠 기록한다.
+doc_id · 제목 · 초록 앞부분은 MARA 스냅샷에서 읽었다(공개 arXiv 초록). **gemma 라벨 칸은 session 20 본 실행(`backfill-20261002-113334`, #8 은 소표본 `backfill-20261002-112509`) 뒤 채웠다** — 보존소 `data/backfill/mara-37/extractions/` 의 값 그대로, `tech_domains` 는 모델 출력 순서. 사용자는 판정만 적고, 레코드는 고치지 않는다(결정 3). 정확도는 필드별(`release_type` · `tech_domains` 값별 · `Agent` 포함 여부)로 정답 10 / 비정답 4 를 나눠 기록한다.
 
-| # | doc_id | MARA 골든셋 | 제목 | 초록 앞부분 | gemma `release_type` | gemma `tech_domains` | 판정 `release_type` | 판정 `tech_domains` |
-|---|---|---|---|---|---|---|---|---|
-| 1 | arXiv:2401.07324v3 | GS-019 | Small LLMs Are Weak Tool Learners: A Multi-LLM Agent | Large Language Model (LLM) agents significantly extend the capabilities of standalone LLMs, empowering them to interact with external tools (e.g., APIs, functions) and complete various tasks in a self-directed fashion. T… | | | | |
-| 2 | arXiv:2602.16901v1 | GS-025 | AgentLAB: Benchmarking LLM Agents against Long-Horizon Attacks | LLM agents are increasingly deployed in long-horizon, complex environments to solve challenging problems, but this expansion exposes them to long-horizon attacks that exploit multi-turn user-agent-environment interaction… | | | | |
-| 3 | arXiv:2410.09024v3 | — | AgentHarm: A Benchmark for Measuring Harmfulness of LLM Agents | The robustness of LLMs to jailbreak attacks, where users design prompts to circumvent safety measures and misuse model capabilities, has been studied primarily for LLMs acting as simple chatbots. Meanwhile, LLM agents --… | | | | |
-| 4 | arXiv:2502.05227v1 | GS-020 | Robotouille: An Asynchronous Planning Benchmark for LLM Agents | Effective asynchronous planning, or the ability to efficiently reason and plan over states and actions that must happen in parallel or sequentially, is essential for agents that must account for time delays, reason over … | | | | |
-| 5 | arXiv:2410.09114v2 | — | Catastrophic Cyber Capabilities Benchmark (3CB): Robustly Evaluating LLM Agent Cyber Offense Capabilities | LLM agents have the potential to revolutionize defensive cyber operations, but their offensive capabilities are not yet fully understood. To prepare for emerging threats, model developers and governments are evaluating t… | | | | |
-| 6 | arXiv:2512.02230v1 | — | Benchmarking LLM Agents for Wealth-Management Workflows | Modern work relies on an assortment of digital collaboration tools, yet routine processes continue to suffer from human error and delay. To address this gap, this dissertation extends TheAgentCompany with a finance-focus… | | | | |
-| 7 | arXiv:2406.00215v3 | — | HumanEvalComm: Benchmarking the Communication Competence of Code Generation for LLMs and LLM Agent | Large language models (LLMs) have significantly improved their ability to perform tasks in the field of code generation. However, there is still a gap between LLMs being capable coders and being top-tier software enginee… | | | | |
-| 8 | arXiv:2512.06196v1 | GS-004 | ARCANE: A Multi-Agent Framework for Interpretable and Configurable Alignment | As agents based on large language models are increasingly deployed to long-horizon tasks, maintaining their alignment with stakeholder preferences becomes critical. Effective alignment in such settings requires reward mo… | | | | |
-| 9 | arXiv:2512.13930v1 | GS-007 | Hierarchical Multi-agent Large Language Model Reasoning for Autonomous Functional Materials Discovery | Artificial intelligence is reshaping scientific exploration, but most methods automate procedural tasks without engaging in scientific reasoning, limiting autonomy in discovery. We introduce Materials Agents for Simulati… | | | | |
-| 10 | arXiv:2405.16887v2 | GS-003 | A Large Language Model-based multi-agent manufacturing system for intelligent shopfloor | As customer demand for multi-variety and small-batch production increases, dynamic disturbances place greater demands on manufacturing systems. To address such challenges, researchers proposed the multi-agent manufacturi… | | | | |
-| 11 | arXiv:2404.01023v1 | GS-006 | Large Language Model Evaluation Via Multi AI Agents: Preliminary results | As Large Language Models (LLMs) have become integral to both research and daily operations, rigorous evaluation is crucial. This assessment is important not only for individual tasks but also for understanding their soci… | | | | |
-| 12 | arXiv:2412.20138v7 | GS-005 | TradingAgents: Multi-Agents LLM Financial Trading Framework | Significant progress has been made in automated problem-solving using societies of agents powered by large language models (LLMs). In finance, efforts have largely focused on single-agent systems handling specific tasks … | | | | |
-| 13 | arXiv:2602.03128v1 | GS-002 | Understanding Multi-Agent LLM Frameworks: A Unified Benchmark and Experimental Analysis | Multi-agent LLM frameworks are widely used to accelerate the development of agent systems powered by large language models (LLMs). These frameworks impose distinct architectural structures that govern how agents interact… | | | | |
-| 14 | arXiv:2406.01893v2 | GS-003 | Large Language Model-Enabled Multi-Agent Manufacturing Systems | Traditional manufacturing faces challenges adapting to dynamic environments and quickly responding to manufacturing changes. The use of multi-agent systems has improved adaptability and coordination but requires further … | | | | |
+### 11.1 14건에 붙은 값의 정의 (`schema.md` 그대로)
+
+**`tech_domains`** — 무엇에 **관한** 소식인가. 가장 관련 깊은 것부터 1~3개 (`schema.md` §1)
+
+| 값 | 포함 범위 | 경계 사례 판단 | 14건 중 |
+|---|---|---|---|
+| `LLM` | 신규 모델 공개, 아키텍처, 사전학습, 스케일링 | 모델 "출시"는 `LLM` + 발표유형 `ProductLaunch` | 8 |
+| `Agent` | 툴 사용, 자율 루프, 멀티에이전트, 컴퓨터 사용 | 단발 함수 호출 기능은 `LLM`. 아래 "Agent 로 분류하는 기준" 참고 | 14 |
+| `Reasoning` | 사고 시간 확장, CoT, 추론 특화 학습 | 벤치마크 점수만 다루면 `Eval/Governance` | 2 |
+| `Training/Finetuning` | 사후학습, RLHF/RLAIF, DPO, PEFT, 증류 | — | 1 |
+| `Eval/Governance` | 벤치마크, 평가 방법론, 감사, 내부 거버넌스 | 정부 규제는 `Safety/Alignment` 아니고 발표유형 `Policy/Regulation` | 8 |
+| `Safety/Alignment` | 정렬, 레드팀, 해석가능성, 오남용 대응 | — | 3 |
+| `Embodied/Robotics` | 로보틱스, 자율주행, 물리세계 상호작용 | — | 1 |
+| `Application/Product` | 최종 사용자 제품·서비스에의 적용 | 모델 자체 발표는 `LLM` | 4 |
+
+**`Agent` 로 분류하는 기준** (`schema.md` §1, D-022) — 아래를 **모두** 만족할 때만 `Agent`:
+1. 시스템이 **여러 단계를 스스로 이어서** 실행한다 (사람이 매 단계를 지시하지 않는다)
+2. **도구 호출 · 계획 수립 · 자기 수정** 중 하나 이상이 소식의 핵심이다
+
+LLM 이 보조 도구로 쓰였을 뿐이면 `Agent` 가 아니다. "프레임워크가 멀티에이전트 오케스트레이션을 지원"은 `Agent`(에이전트 구조 자체가 주제).
+
+**`release_type`** — 소식의 **형태**. 정확히 1개. 여러 개로 보이면 1차 사건을 고른다 (`schema.md` §2)
+
+| 값 | 정의 | 경계 사례 판단 | 14건 중 |
+|---|---|---|---|
+| `Paper` | 논문, 프리프린트, 기술 리포트 | — | 8 |
+| `OpenSource` | 가중치/코드/데이터의 공개 | — | 1 |
+| `Benchmark/Report` | **공식 조직**이 낸 벤치마크 결과, 시장·산업 조사 보고서 | 개인·커뮤니티 측정치는 `Community/Discussion` | 5 |
+
+> `Benchmark/Report` 의 정의는 "**공식 조직**이 낸 벤치마크 결과"다. 대학·연구실이 낸 벤치마크 **논문**을 이 값으로 볼지 `Paper` 로 볼지가 이 14건에서 판정이 갈릴 수 있는 자리다 — 정의만 옮기고 판단은 하지 않았다.
+
+### 11.2 판정 표
+
+판정 칸에는 **맞음 / 틀림 / 애매** 중 하나를 적는다. 틀림이면 정답 값을, 애매면 이유를 함께 적는다. `tech_domains` 는 **붙은 값마다** 따로 판정하고(`Agent` 는 별도 칸), 빠졌다고 보는 값이 있으면 마지막 칸에 적는다.
+
+| # | doc_id | MARA 골든셋 | 제목 | 초록 앞부분 | gemma `release_type` | gemma `tech_domains` | 판정 `release_type` | 판정 `Agent` | 판정 나머지 값 ① | 판정 나머지 값 ② | 빠진 값 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | arXiv:2401.07324v3 | GS-019 | Small LLMs Are Weak Tool Learners: A Multi-LLM Agent | Large Language Model (LLM) agents significantly extend the capabilities of standalone LLMs, empowering them to interact with external tools (e.g., APIs, functions) and complete various tasks in a self-directed fashion. T… | `Paper` | `Agent` · `Training/Finetuning` · `LLM` | | `Agent`:  | `Training/Finetuning`:  | `LLM`:  | |
+| 2 | arXiv:2602.16901v1 | GS-025 | AgentLAB: Benchmarking LLM Agents against Long-Horizon Attacks | LLM agents are increasingly deployed in long-horizon, complex environments to solve challenging problems, but this expansion exposes them to long-horizon attacks that exploit multi-turn user-agent-environment interaction… | `Benchmark/Report` | `Eval/Governance` · `Agent` · `Safety/Alignment` | | `Agent`:  | `Eval/Governance`:  | `Safety/Alignment`:  | |
+| 3 | arXiv:2410.09024v3 | — | AgentHarm: A Benchmark for Measuring Harmfulness of LLM Agents | The robustness of LLMs to jailbreak attacks, where users design prompts to circumvent safety measures and misuse model capabilities, has been studied primarily for LLMs acting as simple chatbots. Meanwhile, LLM agents --… | `Benchmark/Report` | `Eval/Governance` · `Agent` · `Safety/Alignment` | | `Agent`:  | `Eval/Governance`:  | `Safety/Alignment`:  | |
+| 4 | arXiv:2502.05227v1 | GS-020 | Robotouille: An Asynchronous Planning Benchmark for LLM Agents | Effective asynchronous planning, or the ability to efficiently reason and plan over states and actions that must happen in parallel or sequentially, is essential for agents that must account for time delays, reason over … | `Benchmark/Report` | `Agent` · `Eval/Governance` · `Embodied/Robotics` | | `Agent`:  | `Eval/Governance`:  | `Embodied/Robotics`:  | |
+| 5 | arXiv:2410.09114v2 | — | Catastrophic Cyber Capabilities Benchmark (3CB): Robustly Evaluating LLM Agent Cyber Offense Capabilities | LLM agents have the potential to revolutionize defensive cyber operations, but their offensive capabilities are not yet fully understood. To prepare for emerging threats, model developers and governments are evaluating t… | `Benchmark/Report` | `Agent` · `Eval/Governance` | | `Agent`:  | `Eval/Governance`:  | — | |
+| 6 | arXiv:2512.02230v1 | — | Benchmarking LLM Agents for Wealth-Management Workflows | Modern work relies on an assortment of digital collaboration tools, yet routine processes continue to suffer from human error and delay. To address this gap, this dissertation extends TheAgentCompany with a finance-focus… | `Benchmark/Report` | `Agent` · `Eval/Governance` · `LLM` | | `Agent`:  | `Eval/Governance`:  | `LLM`:  | |
+| 7 | arXiv:2406.00215v3 | — | HumanEvalComm: Benchmarking the Communication Competence of Code Generation for LLMs and LLM Agent | Large language models (LLMs) have significantly improved their ability to perform tasks in the field of code generation. However, there is still a gap between LLMs being capable coders and being top-tier software enginee… | `Paper` | `Eval/Governance` · `Agent` · `LLM` | | `Agent`:  | `Eval/Governance`:  | `LLM`:  | |
+| 8 | arXiv:2512.06196v1 | GS-004 | ARCANE: A Multi-Agent Framework for Interpretable and Configurable Alignment | As agents based on large language models are increasingly deployed to long-horizon tasks, maintaining their alignment with stakeholder preferences becomes critical. Effective alignment in such settings requires reward mo… | `Paper` | `Safety/Alignment` · `Agent` · `Reasoning` | | `Agent`:  | `Safety/Alignment`:  | `Reasoning`:  | |
+| 9 | arXiv:2512.13930v1 | GS-007 | Hierarchical Multi-agent Large Language Model Reasoning for Autonomous Functional Materials Discovery | Artificial intelligence is reshaping scientific exploration, but most methods automate procedural tasks without engaging in scientific reasoning, limiting autonomy in discovery. We introduce Materials Agents for Simulati… | `Paper` | `Agent` · `Reasoning` · `Application/Product` | | `Agent`:  | `Reasoning`:  | `Application/Product`:  | |
+| 10 | arXiv:2405.16887v2 | GS-003 | A Large Language Model-based multi-agent manufacturing system for intelligent shopfloor | As customer demand for multi-variety and small-batch production increases, dynamic disturbances place greater demands on manufacturing systems. To address such challenges, researchers proposed the multi-agent manufacturi… | `Paper` | `Agent` · `LLM` · `Application/Product` | | `Agent`:  | `LLM`:  | `Application/Product`:  | |
+| 11 | arXiv:2404.01023v1 | GS-006 | Large Language Model Evaluation Via Multi AI Agents: Preliminary results | As Large Language Models (LLMs) have become integral to both research and daily operations, rigorous evaluation is crucial. This assessment is important not only for individual tasks but also for understanding their soci… | `Paper` | `Eval/Governance` · `Agent` · `LLM` | | `Agent`:  | `Eval/Governance`:  | `LLM`:  | |
+| 12 | arXiv:2412.20138v7 | GS-005 | TradingAgents: Multi-Agents LLM Financial Trading Framework | Significant progress has been made in automated problem-solving using societies of agents powered by large language models (LLMs). In finance, efforts have largely focused on single-agent systems handling specific tasks … | `OpenSource` | `Agent` · `LLM` · `Application/Product` | | `Agent`:  | `LLM`:  | `Application/Product`:  | |
+| 13 | arXiv:2602.03128v1 | GS-002 | Understanding Multi-Agent LLM Frameworks: A Unified Benchmark and Experimental Analysis | Multi-agent LLM frameworks are widely used to accelerate the development of agent systems powered by large language models (LLMs). These frameworks impose distinct architectural structures that govern how agents interact… | `Paper` | `Agent` · `Eval/Governance` · `LLM` | | `Agent`:  | `Eval/Governance`:  | `LLM`:  | |
+| 14 | arXiv:2406.01893v2 | GS-003 | Large Language Model-Enabled Multi-Agent Manufacturing Systems | Traditional manufacturing faces challenges adapting to dynamic environments and quickly responding to manufacturing changes. The use of multi-agent systems has improved adaptability and coordination but requires further … | `Paper` | `Agent` · `Application/Product` · `LLM` | | `Agent`:  | `Application/Product`:  | `LLM`:  | |
 
 ## 12. 결정 대기 (2부)
 
