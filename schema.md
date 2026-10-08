@@ -280,21 +280,34 @@ alias 사전이 유지 가능하다. 반면 기존기술 태그는 어휘 규모
 
 ## Obsidian frontmatter 매핑
 
-`NewsNote.model_dump(by_alias=True)` 결과를 아래처럼 평평하게 펴서 쓴다.
+한국어 alias 를 **영문 키**로 바꿔 평평하게 펴서 쓴다 (D-029). 매핑의 정본은
+`obsidian_writer/mapper.py` 의 `FRONTMATTER_KEYS` · `IMPACT_KEYS` 이고, 키 순서는
+`FRONTMATTER_ORDER` 다. 아래는 그 순서를 그대로 옮긴 예시다.
 
 ```yaml
 ---
-제목: "..."
-기술영역: [LLM, Reasoning]      # 리스트
-발표유형: ProductLaunch          # 단일 값
-관련기업: [Anthropic]            # canonical 만 (원문표기는 본문 각주로)
-관련기존기술: [Transformer, RLHF]
-영향도: 4                        # ← Impact.score
-영향도근거: "..."                # ← Impact.rationale
-출처: https://...
-발행일: 2026-08-29
+title: "..."
+date: '2026-08-29'               # 수집일 (파일명 앞 날짜와 같다)
+published_at: '2026-08-27'       # 원문 발행일
+source: AI타임스
+source_url: https://...
+tech_domain: [LLM, Reasoning]    # ← 기술영역. 리스트
+release_type: ProductLaunch      # ← 발표유형. 단일 값
+companies: [Anthropic]           # ← 관련기업. canonical 만 (원문표기는 본문 각주로)
+prior_art: [Transformer, RLHF]   # ← 관련기존기술
+impact_score: 4                  # ← 영향도.점수 (Impact.score)
+impact_rationale: "..."          # ← 영향도.근거 (Impact.rationale)
+extraction_model: gemma-4-31B-it
+prompt_version: extract_ontology.v4.md
+processed_at: 2026-08-29T08:14:00+09:00
 ---
 ```
+
+`요약`은 frontmatter 가 아니라 본문 `## 요약` 으로 간다.
+
+> 이 블록은 한때 한국어 키(`영향도:` · `영향도근거:` …)로 적혀 있었다. 실제 노트는
+> D-029 이후 영문 키였고, 2026-10-08 Vault 331건을 frontmatter 로 세다가 `영향도` 키가
+> 0건으로 나와 드러났다.
 
 `영향도`를 중첩 객체가 아니라 두 개의 평평한 키로 펴는 이유는 Obsidian 의
 Properties/Dataview 가 중첩 객체를 정렬·필터 대상으로 잘 다루지 못하기 때문이다.
