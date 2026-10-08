@@ -80,14 +80,6 @@ sources:
       limits: {gate: 10, extract: 5}    # 7일 19건
       max_silence_days: 7
 
-    # 2026-09-29: plan 실패 / run 성공 불일치의 원인은 요청하지 않은 gzip 이었다 (D-104).
-    - name: "Google DeepMind Blog"
-      url: "https://deepmind.google/blog/rss.xml"
-      tags: ["vendor"]
-      body_quality: "partial"     # 50건 중 21건 0자. 편차가 크다
-      limits: {gate: 5, extract: 3}     # 7일 3건
-      max_silence_days: 21        # 100건이 약 11개월치
-
     - name: "NVIDIA Developer"
       url: "https://developer.nvidia.com/blog/feed/"
       tags: ["vendor"]
@@ -112,8 +104,9 @@ sources:
       tags: ["ko", "media"]
       body_quality: "truncated"   # 중앙값 1457자
       # 게이트 = 피드 깊이(50). 그보다 작으면 미룬 항목이 다음 실행 전에 피드 밖으로
-      # 밀려난다 (D-112). 추출 15 는 손실 규모(evicted_extraction)를 본 뒤 정한다
-      limits: {gate: 50, extract: 15}
+      # 밀려난다 (D-112). 추출 30 = 평소 하루 게이트 통과 최댓값 29 를 덮는 값. 15 일 때
+      # 미룬 추출은 다음 실행에서 한 번도 집히지 않았고(0/50) 5회에 43건 밀려났다 (D-119)
+      limits: {gate: 50, extract: 30}
       max_silence_days: 2
 
   # 수집을 멈춘 소스. **수집하지 않는다.** 제외는 앞으로만이라(D-105) 이미 들어온
@@ -141,6 +134,15 @@ sources:
       naive_date_offset: "+09:00"
       retired_on: "2026-09-29"
       reason: "300자 잘림 본문에서 근거 없는 채움·분류 흔들림 (D-107)"
+
+    # 자동 실행 5회(10/1~10/8)의 창 안 글 6건 중 4건 0자, 나머지 2건도 78·93자 한 줄
+    # 소개문이다. 제목만 있는 노트가 같은 사건의 AI타임스 노트보다 영향도를 낮게 매겼다
+    # (Gemini 4 Argon 2 vs 3). 수집 실패(gzip)는 D-104 에서 고쳤고 원인이 아니다 (D-120).
+    - name: "Google DeepMind Blog"
+      url: "https://deepmind.google/blog/rss.xml"
+      tags: ["vendor"]
+      retired_on: "2026-10-08"
+      reason: "창 안 실질 본문 0/6 — 0자 4건, 한 줄 소개문 2건 (D-120)"
 
   arxiv:
     # arXiv API 로 최근 N일 논문을 가져올 카테고리
