@@ -16,12 +16,29 @@ stderr 는 로그 파일로 보존만 한다.
 예전 등급(3회 = 심각)은 "AI타임스 피드 약 3일치"를 전제로 했다. 실측은 **27.8시간**이었다
 (session-18). 소스마다 깊이가 다르므로(arXiv 1.1시간 ~ OpenAI 10년+) 횟수로는 못 가른다.
 
-    여유 = 피드 깊이 − 마지막 성공 수집 이후 시간 − 다음 실행까지(24시간)
+    여유 = 최근 피드 깊이 − 마지막 정상 처리 이후 시간 − 다음 실행까지(24시간)
 
 여유가 0 이하면 **심각** — 다음 정기 실행 전에 사람이 돌리지 않으면 확실히 잃는다. 여유가
 있으면 1회는 정보, 2회 연속부터 경고(깊은 피드라도 죽은 소스는 문제다). 깊이 기록이 없으면
 예전 횟수 규칙을 쓴다. `env_not_ready` · `breaker` 는 소스 전체에 걸리므로 **가장 빠듯한
 소스**로 잰다. 표본 피드(`feed_kind: sample`)는 깊이 계산에서 뺀다 — 피드가 원래 일부만 준다.
+
+### 시계는 "마지막 성공 수집"이 아니라 "마지막 정상 처리"부터 간다 (D-123)
+
+**정상 처리** = 그 소스의 수집이 성공했고 **그 실행에서 브레이커가 하나도 걸리지 않았다.**
+처음에는 마지막 성공 *수집*부터 쟀다. 그런데 브레이커가 걸린 실행도 수집은 성공하기 때문에
+시계가 그 실행에서 0 으로 돌아갔다 — 10/12 08:10(vLLM 점검 404)이 "여유 34.1시간 · 경고"로
+나갔고 토스트는 없었는데, 실제로는 7시간 만에 18건이 피드 밖으로 나갔다. **봤다고 해서 처리한
+것은 아니다.** 같은 자리에 정상 처리 시계를 넣으면 58.1 − 90.1 − 24 = −56.0 → 심각.
+
+- 미룬 게이트가 0 일 필요는 없다. 상한에 걸린 날까지 실패로 잡으면 크기 신호가 가부 신호를
+  흉내 낸다. 상한 때문에 미룬 것은 `not_drained` · `evicted` 가 센다
+- 실행 중간에 브레이커가 걸려도 그 실행 전체를 정상 처리로 치지 않는다. 앞쪽 소스가 다 돌았는지는
+  요약에서 가를 수 없고, 틀리면 이르게 심각이 되는 쪽이 안전하다
+- 세 종류(`source_error` · `env_not_ready` · `breaker`)가 **같은 시계**를 쓴다. 정상 처리는 성공
+  수집을 포함하므로 브레이커가 없던 동안은 예전 값과 같다. 둘을 나누면 브레이커 다음 날의 수집
+  실패가 전날 수집부터 재서 같은 결함을 물려받는다
+- 깊이는 **가장 최근 성공 수집**의 값이다. 잃는 시점은 지금 피드가 덮는 범위로 정해진다
 
 ## 평가하지 않은 조건은 닫지 않는다
 
@@ -117,27 +134,35 @@ def key_of(ev: dict[str, Any]) -> str:
 # 잃기까지의 여유 (ADR-025 Amendment 1)
 # ---------------------------------------------------------------------------
 def last_depths(runs_dir: Path, sources: Iterable[str]) -> dict[str, tuple[datetime, float]]:
-    """소스별 **마지막 성공 수집**의 시각과 그때 잰 피드 깊이(시간). 표본 피드는 뺀다."""
+    """소스별 (**마지막 정상 처리** 시각, **가장 최근 성공 수집**의 피드 깊이). 표본 피드는 뺀다.
+
+    정상 처리 = 수집 성공 + 그 실행에 브레이커 없음 (모듈 설명). 둘 중 하나라도 lookback 안에
+    없으면 그 소스는 빠진다 — 깊이를 모르는 것으로 보고 횟수 규칙으로 넘어간다.
+    """
     wanted = set(sources)
-    found: dict[str, tuple[datetime, float]] = {}
+    depth: dict[str, float] = {}
+    processed: dict[str, datetime] = {}
     paths = sorted(Path(runs_dir).glob("pipeline-*.json"), reverse=True)[:DEPTH_LOOKBACK_RUNS]
     for path in paths:
-        if wanted <= set(found):
+        if wanted <= set(processed):
             break
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             started = datetime.fromisoformat(data["started_at"])
         except (OSError, ValueError, KeyError, TypeError):
             continue
+        tripped = bool(data.get("breaker_tripped"))
         for name, fetch in (data.get("fetch") or {}).items():
-            if name not in wanted or name in found:
+            if name not in wanted or name in processed:
                 continue
             if fetch.get("status") not in ("ok", "empty") or fetch.get("feed_kind") == "sample":
                 continue
             if fetch.get("depth_hours") is None:
                 continue
-            found[name] = (started, float(fetch["depth_hours"]))
-    return found
+            depth.setdefault(name, float(fetch["depth_hours"]))
+            if not tripped:
+                processed[name] = started
+    return {name: (processed[name], depth[name]) for name in processed}
 
 
 def loss_clock(
@@ -174,7 +199,7 @@ def attach_loss_clocks(
         verdict = "다음 정기 실행 전에 돌리지 않으면 잃는다" if clock["slack_hours"] <= 0 else f"여유 {clock['slack_hours']}시간"
         ev["detail"] = (
             f"{ev['detail']} — {clock['source']} 피드 깊이 {clock['depth_hours']}시간,"
-            f" 마지막 성공 {clock['hours_since_success']}시간 전: {verdict}"
+            f" 마지막 정상 처리 {clock['hours_since_success']}시간 전: {verdict}"
         )
 
 

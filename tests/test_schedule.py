@@ -256,11 +256,12 @@ def test_env_not_ready_is_critical_on_second_run():
 # ---------------------------------------------------------------------------
 # 잃기까지의 여유 — 피드 깊이 기반 등급 (ADR-025 Amendment 1)
 # ---------------------------------------------------------------------------
-def _run_summary(runs, name: str, started: datetime, fetch: dict):
+def _run_summary(runs, name: str, started: datetime, fetch: dict, *, breaker: list[str] | None = None, **extra):
     runs.mkdir(parents=True, exist_ok=True)
-    (runs / f"pipeline-{name}.json").write_text(
-        json.dumps({"started_at": started.isoformat(), "fetch": fetch}), encoding="utf-8"
-    )
+    body = {"started_at": started.isoformat(), "fetch": fetch, **extra}
+    if breaker is not None:
+        body["breaker_tripped"] = breaker
+    (runs / f"pipeline-{name}.json").write_text(json.dumps(body), encoding="utf-8")
 
 
 def test_shallow_feed_is_critical_on_the_first_failure(tmp_path):
@@ -333,6 +334,136 @@ def test_without_depth_history_the_count_rule_applies(tmp_path):
     A.attach_loss_clocks(events, runs_dir=tmp_path / "none", sources=["A"], now=NOW)
     assert "loss" not in events[0]
     assert A.severity(A.SOURCE_ERROR, 3, events[0].get("loss")) == A.CRITICAL
+
+
+# --- 시계는 마지막 정상 처리부터 (D-123) ----------------------------------------
+KST_ = timezone(timedelta(hours=9))
+#: 10/12 08:10 실행의 `_finish` 시각 (경보 first_seen).
+OUTAGE_NOW = datetime(2026, 10, 12, 8, 10, 7, tzinfo=KST_)
+
+
+def _outage_runs(runs):
+    """실제 기록의 모양: 10/8 14:01 수동 실행(정상) → 10/12 08:10 (vLLM 점검 404, 게이트 브레이커)."""
+    _run_summary(runs, "20261008-140137", datetime(2026, 10, 8, 14, 1, 37, tzinfo=KST_), {
+        "arXiv": {"status": "ok", "depth_hours": 3.0, "feed_kind": "sample"},
+        "NVIDIA": {"status": "ok", "depth_hours": 1801.6},
+        "AI타임스": {"status": "ok", "depth_hours": 47.1},
+    }, breaker=[])
+    _run_summary(runs, "20261012-081004", datetime(2026, 10, 12, 8, 10, 4, tzinfo=KST_), {
+        "arXiv": {"status": "ok", "depth_hours": 1.6, "feed_kind": "sample"},
+        "NVIDIA": {"status": "ok", "depth_hours": 1764.0},
+        "AI타임스": {"status": "ok", "depth_hours": 58.1},
+    }, breaker=["relevance_gate"])
+
+
+def test_breaker_counts_from_the_last_processed_run_not_the_last_fetch(tmp_path):
+    """10/12 08:10 재계산: 예전 시계는 수집이 성공한 그 실행에서 0 으로 돌아가 '여유 34.1 · 경고'였다.
+
+    실제로는 7시간 만에 AI타임스 18건이 피드 밖으로 나갔다 (`evicted_gate`, 15:58).
+    """
+    runs = tmp_path / "runs"
+    _outage_runs(runs)
+    events = [A.event(A.BREAKER, "relevance_gate: 전송 오류 연속")]
+
+    A.attach_loss_clocks(events, runs_dir=runs, sources=["NVIDIA", "AI타임스"], now=OUTAGE_NOW)
+
+    loss = events[0]["loss"]
+    assert loss["source"] == "AI타임스"
+    assert loss["depth_hours"] == 58.1, "깊이는 가장 최근 성공 수집의 값이다"
+    assert loss["hours_since_success"] == 90.1, "시계는 브레이커가 없던 마지막 실행부터 간다"
+    assert loss["slack_hours"] == -56.0
+    assert A.severity(A.BREAKER, 1, loss) == A.CRITICAL
+    assert "다음 정기 실행 전에 돌리지 않으면 잃는다" in events[0]["detail"]
+    assert "마지막 정상 처리 90.1시간 전" in events[0]["detail"]
+
+
+def test_a_capped_run_still_counts_as_processed(tmp_path):
+    """상한에 걸려 게이트를 미룬 날은 처리 실패가 아니다 — 그건 `not_drained` · `evicted` 가 센다."""
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {"A": {"status": "ok", "depth_hours": 60.0}},
+                 breaker=[], sources={"A": {"deferred_gate": 20}}, window={"A": {"drained": False}})
+
+    clock = A.loss_clock(A.last_depths(runs, ["A"]), now=NOW, source="A")
+
+    assert clock["hours_since_success"] == 24.0
+
+
+def test_an_extraction_breaker_is_not_a_processed_run_either(tmp_path):
+    """추출 대기도 똑같이 피드 밖으로 밀려난다 (`evicted_extraction`)."""
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260928-220000", NOW - timedelta(hours=26), {"A": {"status": "ok", "depth_hours": 60.0}}, breaker=[])
+    _run_summary(runs, "20260929-220000", NOW - timedelta(hours=2), {"A": {"status": "ok", "depth_hours": 50.0}},
+                 breaker=["extraction"])
+
+    clock = A.loss_clock(A.last_depths(runs, ["A"]), now=NOW, source="A")
+
+    assert (clock["hours_since_success"], clock["depth_hours"]) == (26.0, 50.0)
+
+
+def test_fetch_failure_and_breaker_share_one_clock(tmp_path):
+    """동시에 나도, 브레이커 다음 날 수집이 죽어도 같은 시계다.
+
+    수집 시계를 따로 두면 전날(브레이커 · 수집 성공)부터 재서 여유를 24시간 과대평가한다.
+    """
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260928-000000", NOW - timedelta(hours=48), {
+        "A": {"status": "ok", "depth_hours": 60.0}, "B": {"status": "ok", "depth_hours": 1800.0},
+    }, breaker=[])
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {
+        "A": {"status": "ok", "depth_hours": 60.0}, "B": {"status": "ok", "depth_hours": 1800.0},
+    }, breaker=["relevance_gate"])
+    _run_summary(runs, "20260930-000000", NOW, {
+        "A": {"status": "timeout"}, "B": {"status": "ok", "depth_hours": 1800.0},
+    }, breaker=["relevance_gate"])
+    events = [A.event(A.SOURCE_ERROR, "수집 실패", "A"), A.event(A.BREAKER, "relevance_gate: 전송 오류")]
+
+    A.attach_loss_clocks(events, runs_dir=runs, sources=["A", "B"], now=NOW)
+
+    assert [ev["loss"]["source"] for ev in events] == ["A", "A"]
+    assert [ev["loss"]["hours_since_success"] for ev in events] == [48.0, 48.0]
+    assert [ev["loss"]["slack_hours"] for ev in events] == [-12.0, -12.0]
+    assert all(A.severity(ev["kind"], 1, ev["loss"]) == A.CRITICAL for ev in events)
+
+
+def test_without_any_breaker_the_clock_is_unchanged(tmp_path):
+    """브레이커가 없던 기간에는 정상 처리 = 성공 수집이다 — 예전 값과 같아야 한다."""
+    runs = tmp_path / "runs"
+    _run_summary(runs, "20260928-000000", NOW - timedelta(hours=48), {"A": {"status": "ok", "depth_hours": 60.0}})
+    _run_summary(runs, "20260929-000000", NOW - timedelta(hours=24), {"A": {"status": "ok", "depth_hours": 40.0}}, breaker=[])
+
+    clock = A.loss_clock(A.last_depths(runs, ["A"]), now=NOW, source="A")
+
+    assert (clock["hours_since_success"], clock["depth_hours"], clock["slack_hours"]) == (24.0, 40.0, -8.0)
+
+
+def test_scheduled_breaker_after_a_gap_is_critical_and_toasts(world, monkeypatch):
+    """끝에서 끝까지 10/12 모양: 4일 공백 뒤 게이트가 전송 오류로 멈추면 심각 + 토스트.
+
+    수집은 성공하고 깊이 58.1시간을 잰다 — 예전 시계라면 여기서 0 으로 돌아가 경고였다.
+    """
+    from collectors.rss import FeedResult, FetchStatus
+    from extraction.vllm import VLLMEndpointError
+
+    config = _config()
+    _approve(config, world["root"])
+    _run_summary(world["paths"].runs_dir, "20260926-095430", NOW - timedelta(hours=90.1),
+                 {GEEK: {"status": "ok", "depth_hours": 47.1}}, breaker=[])
+    items = tuple(_item(n) for n in range(1, 6))
+    monkeypatch.setattr(
+        pipeline_runner, "collect_feed_results",
+        lambda config, *, source_name=None, **kw: [
+            FeedResult(source_name=source_name, status=FetchStatus.OK, items=items if source_name == GEEK else (),
+                       depth_hours=58.1 if source_name == GEEK else None)
+        ],
+    )
+    world["behaviour"]["relevance_gate"] = lambda title: VLLMEndpointError("HTTP 404: 404 page not found")
+
+    world["run"](config)
+
+    alert = _state(world)["open"]["breaker|-"]
+    assert alert["severity"] == A.CRITICAL
+    assert alert["loss"]["hours_since_success"] == 90.1 and alert["loss"]["slack_hours"] == -56.0
+    assert world["toasts"] and "breaker" in world["toasts"][0][1]
 
 
 def test_scheduled_run_grades_a_fetch_failure_by_depth(world, monkeypatch):
@@ -456,10 +587,11 @@ def world(tmp_path, root, monkeypatch):
         "connects": [],
         "toasts": [],
         "fetches": feeds,
+        "behaviour": {},  # 단계 → ScriptedClient behaviour (전송 오류로 브레이커를 거는 데 쓴다)
     }
 
     def factory(config, stage):
-        client = ScriptedClient("gemma-4-31B-it")
+        client = ScriptedClient("gemma-4-31B-it", w["behaviour"].get(stage))
         w["clients"].append(stage)
         return client
 
