@@ -278,7 +278,7 @@ config 상한(ADR-023)으로 `pipeline run` 이 인자 없이 도는 상태가 �
 
 ## Amendment 2 — 잃기까지의 여유는 "마지막 정상 처리"부터 잰다 (2026-10-16)
 
-- **Status:** Proposed
+- **Status:** Accepted (사용자, 2026-10-16)
 - **Decision Source:** Human
 
 ### Context
@@ -362,7 +362,7 @@ config 상한(ADR-023)으로 `pipeline run` 이 인자 없이 도는 상태가 �
 - 품질 지표 임계값은 기록 2주 뒤에 정한다 (Implementation 후속)
 - ✅ **정기 시각 발화는 실기로 확인됐다** (10/1 ~ 10/16 정시 실행 10회). ⚠️ **StartWhenAvailable 따라잡기는 여전히 미검증** — PC 가 매번 08:10 전에 부팅됐고, 작업 스케줄러 운영 로그가 꺼져 있다
 - 🔴 **실기 브레이커(2026-10-12)가 Amendment 1 의 시계 결함을 드러냈다** — 경고 · 토스트 없음 → Amendment 2. 고친 뒤의 브레이커 → 심각 → 토스트 경로는 **테스트로만** 확인했다. 다음 실기 브레이커에서 확인한다
-- **Status of this ADR:** **Accepted 유지 — Decision 6 의 수집 실패·환경 미준비·차단기 등급과 피드 깊이 서술은 Amendment 1 로, 그 시계는 Amendment 2(Proposed)로 정정됐다.** 상시 승인·대조·전달 결정은 그대로다
+- **Status of this ADR:** **Accepted 유지 — Decision 6 의 수집 실패·환경 미준비·차단기 등급과 피드 깊이 서술은 Amendment 1 로, 그 시계는 Amendment 2 로 정정됐다.** 상시 승인·대조·전달 결정은 그대로다
 
 ## References
 
