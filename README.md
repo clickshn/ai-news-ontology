@@ -1,5 +1,7 @@
 # ai-news-ontology
 
+**상태: 종료 (2026-10-19)** — 개발 종료, 매일 아침 수집만 운영 중 ([ADR-026](docs/adr/ADR-026-close-development-and-run-in-maintenance.md))
+
 AI 뉴스·논문·업계 소식을 자동 수집해 **온톨로지 스키마로 구조화**하고,
 **LLM-judge 기반 eval 로 요약 품질을 검증**한 뒤, **Obsidian Vault 에 마크다운
 노트로 적재**하는 개인 파이프라인.
