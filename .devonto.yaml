@@ -1,0 +1,4 @@
+repo: ai-news-ontology
+domain: dev
+status: maintenance
+known_issue: "d-122 브레이커 경보가 심각 등급까지 안 올라가 피드 유실 알림이 안 감"
