@@ -66,6 +66,8 @@
 - **Cons:** 노트가 더 쌓이지 않는다
 - **Rejected because:** 쌓이는 노트가 이 레포의 실사용 가치다 (D-124)
 
+> ⚠️ **정정 (2026-11-06, 아래 Amendment 1).** 상시 승인 만료 후 갱신하지 않고 자동 실행을 중지했다 (D-126).
+
 ## Consequences
 
 ### Positive
@@ -97,11 +99,69 @@
 - **Rollback:** 개발을 재개하려면 governance → README "하지 않기로 한 것" → `docs/operations.md` → ADR(018 · 022 · 023 · 025, eval 은 014 · 021) 순으로 읽고, 재개할 항목의 다시 열 조건이 갖춰졌는지부터 본다 (session-22 §5). 운영을 멈추려면 `docs/operations.md` 의 운영 중단 절차를 따른다
 - **Migration Cost:** Low
 
+## Amendment 1 — 자동 수집도 멈췄다: "자동 수집만 유지"라는 전제가 더는 성립하지 않는다 (2026-11-06)
+
+- **Status:** Accepted
+- **Decision Source:** Human
+
+### Context
+
+**무엇이 바뀌었나.** 이 ADR 은 "매일 08:10 자동 수집만 유지한다"를 전제로 했고, Alternatives 에서
+"자동 실행도 중단"을 "쌓이는 노트가 이 레포의 실사용 가치다"로 기각했다. 2026-10-22 상시 승인이
+만료된 뒤 갱신하지 않았고, 2026-11-06 Windows 작업 스케줄러 작업 `ai-news-ontology daily` 를
+Disabled 로 바꿔 자동 실행을 중지했다 (D-126). 마지막 기사 노트는 2026-10-22 다.
+
+중지 시점 열린 경보는 2건이다 — `preflight_mismatch`(중지 원인), `not_drained`(OpenAI News, 미룬
+추출 4건 — 피드에서 밀려나 복구 불가, 재가동 시 쫓지 않는다).
+
+### Decision
+
+- 자동 실행을 중지한다. 작업은 해제(Unregister)가 아니라 **비활성(Disabled)** 으로 두어 등록을 남긴다
+- **결정의 본체는 유지된다** — 개발 종료, 새 기능을 넣지 않는다, 열려 있던 항목은 README "하지 않기로 한 것 / 조건이 갖춰지면 할 것"이 정본이고 각 항목의 다시 열 조건이 갖춰질 때만 개발을 재개한다
+- 바뀌는 것은 운영 범위뿐이다 — "사람의 일 두 가지(14일 갱신 · 장애 시 재실행)"는 중지 중에는 없고, 재가동하면 다시 생긴다. 재가동 절차는 `docs/operations.md` §7
+
+### Rationale
+
+1. 개발 종료 후 14일 주기 승인 갱신(노트 3건 원문 대조 포함)의 운영 부담이 이 시점의 산출물 가치보다 크다 (사용자)
+2. 상시 승인이 설계대로 **손실이 아니라 정지 쪽으로** 실패했다(Risks 3번째 항목) — 만료 뒤 실행은 LLM 0건으로 멈췄고, 벤더 호출이나 근거 없이 쌓인 노트는 없다
+
+### Evidence
+
+- **Production Data:** 2026-10-23 ~ 11-06 사이 정시 실행 **11회 전부 exit 4**(가부 불일치) · LLM 0건 — `alerts.json` `preflight_mismatch` 연속 11회. Vault 노트 **761건**, 마지막 2026-10-22 (11/06 집계)
+
+### Alternatives
+
+#### 승인을 갱신하고 계속 운영 (이 ADR 의 원래 선택)
+
+- **Pros:** 노트가 계속 쌓인다
+- **Cons:** 14일마다 사람의 대조 작업이 든다
+- **Rejected because:** 그 운영 부담이 이 시점의 산출물 가치보다 크다 (사용자, D-126)
+
+#### 작업 해제 (`register-scheduled-task.ps1 -Unregister`, `docs/operations.md` §6)
+
+- **Pros:** 남은 등록이 없어 실수로 켜질 여지가 없다
+- **Cons:** 재가동 때 재등록이 필요하다
+- **Rejected because:** 비활성은 `Enable-ScheduledTask` 한 줄로 되돌린다 (D-126)
+
+### Consequences
+
+- **Negative:** 2026-10-22 이후의 글은 수집되지 않는다. 피드 깊이(AI타임스 28~62시간) 밖으로 나간 글은 재가동해도 되살릴 수 없다
+- **Negative:** Vault 루트 `_pipeline-status.md` 는 중지 중 갱신되지 않는다 — 중지 당시 손으로 넣은 안내 줄과 프론트매터 `stopped` 속성이 남아 있고, 재가동하면 다음 실행이 둘 다 덮어쓴다
+- **Negative:** 위 Negative 의 "브레이커 → 토스트 실기 확인"과 "`StartWhenAvailable` 따라잡기"는 실행이 없으므로 중지 중에는 확인할 기회가 없다
+- **Risk:** 재가동 시 `approve-schedule` 은 `full_manual_run()` 자격(현재 config 상한과 같은 상한의 수동 실행)에 기댄다. 함수는 날짜를 보지 않지만 2주 이상 공백이므로 그 전제를 손으로 확인한다 (`docs/operations.md` §7)
+
+### Reversibility
+
+- **Reversible:** Yes
+- **Rollback:** `docs/operations.md` §7 — `Enable-ScheduledTask -TaskName "ai-news-ontology daily"` → 자격 확인 → `approve-schedule`(TTY) → 노트 3건 + arXiv 1건 대조
+- **Migration Cost:** Low
+
 ## Review Trigger
 
 - 개발 계속: 사람이 경계 사례를 라벨링해 골든셋이 늘 때 · 골든셋에 영향도 라벨이 쌓였을 때 · MARA 계약의 어느 한쪽이 개발을 재개할 때 · 갱신 표본 대조에서 arXiv 노트의 근거 없는 채움이 의심될 때
+- **Status of this ADR:** **Accepted 유지 — "자동 수집만 유지"라는 운영 전제는 Amendment 1 로 정정됐다.** 자동 실행은 2026-11-06 중지됐다(D-126). 개발 종료와 미결을 "하지 않기로 한 것"으로 두는 결정 본체는 그대로다
 
 ## References
 
 - **Related ADR:** ADR-017 · ADR-018 · ADR-021 · ADR-022 · ADR-023 · ADR-025
-- **Documentation:** README D-122 · D-123 · D-124, "현재 상태", "하지 않기로 한 것 / 조건이 갖춰지면 할 것" · `docs/operations.md` · `docs/handoff/session-21.md` · `docs/handoff/session-22.md`
+- **Documentation:** README D-122 · D-123 · D-124 · D-126, "현재 상태", "하지 않기로 한 것 / 조건이 갖춰지면 할 것" · `docs/operations.md` · `docs/handoff/session-21.md` · `docs/handoff/session-22.md`
