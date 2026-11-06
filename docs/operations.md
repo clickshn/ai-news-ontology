@@ -136,3 +136,36 @@ powershell -ExecutionPolicy Bypass -File scripts\register-scheduled-task.ps1   #
 - 작업 해제: `scripts\register-scheduled-task.ps1 -Unregister`
 - 상시 승인 기록은 만료되게 두거나 지운다. 남겨 두면 다시 등록했을 때 그대로 돈다
 - 로컬 산출물(원장·보존소·실행 요약)의 보존·삭제는 `docs/governance.md` "로컬 산출물 취급"
+
+## 7. 재가동 절차
+
+2026-11-06 자동 실행을 중지했다 (D-126). 작업은 해제(§6)가 아니라 **비활성(Disabled)** 이라 등록은
+남아 있다. 상시 승인은 2026-10-22 에 만료된 채다. 아래 순서로 **한 자리에서** 끝낸다 — 켜기만 하고
+승인을 미루면 다음 정시 실행부터 다시 exit 4 로 멈춘다.
+
+- [ ] **작업을 켠다** (PowerShell)
+
+      Enable-ScheduledTask -TaskName "ai-news-ontology daily"
+      Get-ScheduledTask -TaskName "ai-news-ontology daily" | Get-ScheduledTaskInfo   # 다음 실행 시각
+
+- [ ] **수동 전량 실행 자격을 직접 확인한다.** `approve-schedule` 은 `full_manual_run()`
+      (`pipeline/approval.py`)이 현재 config 상한과 같은 상한으로 끝난 수동 실행(`mode == "config"`)을
+      `data/pipeline/runs/` 에서 찾아야 받는다. 함수는 날짜를 보지 않지만 2주 이상 공백이므로 전제를
+      손으로 본다 — §1 의 `pipeline-20261008-140137.json` 이 남아 있는가, `config.yaml` 소스별 상한이
+      그때와 같은가. 없거나 달라졌으면 수동 전량 실행(`pipeline run`, 6항목 게이트) → 결과 확인부터
+- [ ] **상시 승인을 갱신한다** — 대화형 터미널(TTY)에서 사람이 직접. 에이전트는 만들지 않는다
+
+      .venv/Scripts/python.exe -m pipeline approve-schedule
+
+- [ ] **노트 3건을 원문과 대조한다** (§1 과 같다). 표본은 마지막 실행 하나에서 나오고 샘플러가
+      arXiv 를 뽑지 못하므로, **arXiv 노트 1건은 Vault 에서 손으로 골라** 같이 대조한다
+- [ ] 다음 실행 뒤 상태를 본다 — `data/pipeline/status.txt` · `alerts.json` (§5 "상태 보기")
+
+**알아 둘 것:**
+
+- 중지 당시 열려 있던 `not_drained`(OpenAI News, 미룬 추출 4건)는 피드에서 밀려나 복구할 수 없다.
+  **쫓지 않는다** (D-126)
+- 중지 기간(2026-10-22 이후)의 글은 피드 깊이 밖이라 되살릴 수 없다. 재가동 첫 실행의
+  `feed_rollover` 경고는 그 공백이다 (§3 의 주말 패턴과 같은 모양)
+- Vault 루트 `_pipeline-status.md` 는 중지 중 갱신되지 않는다. 중지 당시 손으로 넣은 안내 줄과
+  프론트매터 `stopped` 속성이 남아 있고, **재가동하면 다음 실행이 둘 다 덮어쓴다** — 따로 지울 필요 없다
